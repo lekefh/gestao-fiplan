@@ -22,8 +22,7 @@ def inicializar_banco():
 
 def limpar_valor(valor, eh_dedutora=False):
     if pd.isna(valor) or valor == "" or valor == "-": return 0.0
-    if isinstance(valor, str): 
-        valor = valor.replace('.', '').replace(',', '.')
+    if isinstance(valor, str): valor = valor.replace('.', '').replace(',', '.')
     try:
         num = float(valor)
         return num * -1 if eh_dedutora else num
@@ -62,34 +61,30 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
         fill = not fill
         
     pdf.set_font("helvetica", "B", 8); pdf.set_fill_color(200, 200, 200)
-    pdf.cell(120, 8, "TOTAIS (CONTAS ANALITICAS)", 1, 0, 'R', True)
+    pdf.cell(120, 8, "TOTAIS (SOMENTE ANALITICAS)", 1, 0, 'R', True)
     pdf.cell(35, 8, f"{t_real:,.2f}", 1, 0, 'R', True)
     pdf.cell(35, 8, f"{t_orc:,.2f}", 1, 1, 'R', True)
     return bytes(pdf.output())
 
 inicializar_banco()
 
-# --- SIDEBAR: IMPORTAÇÃO ---
+# --- SIDEBAR: GESTÃO ---
 with st.sidebar:
     st.header("📥 Gestão de Dados")
     arquivo = st.file_uploader("Subir FIPLAN (.xlsx) ou Backup (.csv)", type=["xlsx", "csv"])
     
-    # Seletores de data (sempre visíveis ao carregar Excel)
-    mes_ref = 1
-    ano_ref = 2026
-    if arquivo and arquivo.name.endswith('.xlsx'):
-        mes_ref = st.selectbox("Mês de Referência", range(1, 13), index=1, format_func=lambda x: MESES_NOMES[x-1])
-        ano_ref = st.number_input("Ano de Referência", value=2026)
+    # Seletores de Data
+    mes_escolhido = st.selectbox("Mês de Referência", range(1, 13), index=1, format_func=lambda x: MESES_NOMES[x-1])
+    ano_escolhido = st.number_input("Ano de Referência", value=2026)
     
     if arquivo and st.button("🚀 Processar Dados"):
         conn = sqlite3.connect(DB_NAME)
         if arquivo.name.endswith('.csv'):
             df_bkp = pd.read_csv(arquivo)
-            # Limpeza radical no backup
             df_bkp = df_bkp.dropna(subset=['natureza'])
             df_bkp = df_bkp[~df_bkp['natureza'].astype(str).str.contains("None|nan", case=False)]
             df_bkp.to_sql('receitas', conn, if_exists='replace', index=False)
-            st.success("✅ Backup Limpo!")
+            st.success("✅ Backup Restaurado!")
         else:
             df_import = pd.read_excel(arquivo, skiprows=7)
             dados = []
@@ -97,39 +92,36 @@ with st.sidebar:
                 cod = str(row.iloc[0]).strip()
                 nat = str(row.iloc[1]).strip()
                 
-                # REGRA DE OURO: Só aceita se tiver pontos e for longo (Analítica)
-                if re.match(r'^\d+\.', cod) and len(cod) > 8 and "None" not in nat:
+                # FILTRO ULTRA RÍGIDO: Deve ter pelo menos 4 pontos (ex: 1.2.1.0.29) e não ser None
+                if cod.count('.') >= 4 and nat != "None" and nat != "nan" and nat != "":
                     is_ded = cod.startswith('9')
-                    dados.append((int(mes_ref), int(ano_ref), cod, nat, 
+                    dados.append((int(mes_escolhido), int(ano_escolhido), cod, nat, 
                                  limpar_valor(row.iloc[3], is_ded), limpar_valor(row.iloc[5], is_ded),
                                  limpar_valor(row.iloc[6], is_ded), limpar_valor(row.iloc[9], is_ded),
                                  limpar_valor(row.iloc[10], is_ded)))
             
             if dados:
-                conn.execute("DELETE FROM receitas WHERE mes = ? AND ano = ?", (int(mes_ref), int(ano_ref)))
+                conn.execute("DELETE FROM receitas WHERE mes = ? AND ano = ?", (int(mes_escolhido), int(ano_escolhido)))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?,?)", dados)
                 conn.commit()
-                st.success(f"✅ {len(dados)} contas analíticas salvas!")
+                st.success(f"✅ {len(dados)} contas analíticas importadas!")
             else:
-                st.error("Nenhum dado analítico encontrado. Verifique o formato do arquivo.")
+                st.error("Nenhuma conta analítica válida encontrada. Verifique se a planilha é do FIPLAN.")
         conn.close()
         st.rerun()
 
+    st.sidebar.divider()
     if st.sidebar.button("🔴 LIMPAR TUDO"):
-        conn = sqlite3.connect(DB_NAME)
-        conn.execute("DELETE FROM receitas")
-        conn.commit()
-        conn.close()
-        st.cache_data.clear()
-        st.rerun()
+        conn = sqlite3.connect(DB_NAME); conn.execute("DELETE FROM receitas"); conn.commit(); conn.close()
+        st.cache_data.clear(); st.rerun()
 
-# --- CARGA E FILTRO ---
+# --- DASHBOARD ---
 conn = sqlite3.connect(DB_NAME)
-df_raw = pd.read_sql("SELECT * FROM receitas WHERE natureza NOT LIKE '%None%'", conn)
+df_raw = pd.read_sql("SELECT * FROM receitas WHERE natureza NOT LIKE '%None%' AND natureza != ''", conn)
 conn.close()
 
 if not df_raw.empty:
-    st.title("📊 Painel Orçamentário")
+    st.title("📊 Gestão Orçamentária")
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1: 
         anos_disp = sorted(df_raw['ano'].unique(), reverse=True)
@@ -147,7 +139,6 @@ if not df_raw.empty:
     if not df_f.empty:
         df_f = df_f.sort_values(['ano', 'mes'])
         k1, k2, k3 = st.columns(3)
-        # Somas cravadas apenas no analítico
         v_orc = df_f.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
         v_real = df_f['realizado_mes'].sum()
         k1.metric("Orçado", f"R$ {v_orc:,.2f}")
@@ -161,9 +152,9 @@ if not df_raw.empty:
         fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao_mes'], name="Previsão", line=dict(color='#FF9800', width=3, dash='dot')))
         st.plotly_chart(fig, width="stretch")
         
-        st.download_button("📄 Baixar PDF Final", data=gerar_pdf_com_grafico(df_f, fig), file_name="relatorio.pdf")
+        st.download_button("📄 Baixar PDF", data=gerar_pdf_com_grafico(df_f, fig), file_name="relatorio.pdf")
     
     st.sidebar.divider()
-    st.sidebar.download_button("📥 Baixar Novo Backup CSV", df_raw.to_csv(index=False).encode('utf-8'), "backup_limpo.csv")
+    st.sidebar.download_button("📥 Baixar Backup", df_raw.to_csv(index=False).encode('utf-8'), "backup.csv")
 else:
-    st.info("Sistema vazio. Importe o arquivo original do FIPLAN.")
+    st.info("Sistema vazio. Importe o arquivo original.")
