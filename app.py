@@ -13,11 +13,15 @@ MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "
 def conectar_google():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        # Usa as credenciais salvas nos Secrets do Streamlit
-        creds_dict = st.secrets["gcp_service_account"]
+        
+        # Pega as credenciais
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        
+        # O TRUQUE: Garante que as quebras de linha da chave sejam lidas corretamente
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        
         credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(credentials)
-        # Tenta abrir pelo nome da planilha
         return client.open("dados-FIPLAN").sheet1
     except Exception as e:
         st.error(f"Erro de conexão com Google Sheets: {e}")
