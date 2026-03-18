@@ -32,14 +32,14 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
     pdf = FPDF()
     pdf.add_page()
     
-    # Cabeçalho
+    # Cabeçalho - Usando novos padrões para evitar avisos no log
     pdf.set_font("helvetica", "B", 18)
     pdf.cell(190, 10, "Relatorio de Gestao Orcamentaria", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.set_font("helvetica", "", 10)
     pdf.cell(190, 10, "Valores Consolidados (Contas Analiticas)", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.ln(5)
     
-    # Tentar capturar gráfico
+    # Gráfico no PDF
     try:
         img_bytes = fig_plotly.to_image(format="png", width=1000, height=500, engine="kaleido")
         pdf.image(io.BytesIO(img_bytes), x=10, y=40, w=190)
@@ -47,7 +47,7 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
     except:
         pdf.ln(5)
 
-    # Tabela
+    # Tabela PDF
     pdf.set_font("helvetica", "B", 9)
     pdf.set_fill_color(46, 125, 50) 
     pdf.set_text_color(255, 255, 255)
@@ -59,16 +59,14 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("helvetica", "", 7)
     
-    # Calculando Totais para o PDF (Garantindo que não some sintéticas)
     t_real = df_filtrado['realizado_mes'].sum()
-    # O orçado anual é o último valor reportado para cada código único
     t_orc = df_filtrado.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
     
     fill = False
     for _, row in df_filtrado.iterrows():
-        # Tratamento de Nones aqui também
-        cod = str(row['codigo_full']) if row['codigo_full'] and str(row['codigo_full']) != 'None' else ""
-        nat = str(row['natureza']) if row['natureza'] and str(row['natureza']) != 'None' else ""
+        # Limpeza definitiva de Nones e vazios no PDF
+        cod = str(row['codigo_full']).replace('None', '') if row['codigo_full'] else ""
+        nat = str(row['natureza']).replace('None', '') if row['natureza'] else ""
         
         pdf.set_fill_color(245, 245, 245) if fill else pdf.set_fill_color(255, 255, 255)
         pdf.cell(35, 7, cod[:15], 1, 0, 'L', fill)
@@ -77,7 +75,7 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
         pdf.cell(35, 7, f"{row['orcado_anual']:,.2f}", 1, 1, 'R', fill)
         fill = not fill
         
-    # Rodapé da Tabela
+    # Rodapé Totais PDF
     pdf.set_font("helvetica", "B", 8)
     pdf.set_fill_color(200, 200, 200)
     pdf.cell(120, 8, "TOTAIS (SOMENTE ANALITICAS)", 1, 0, 'R', True)
@@ -105,7 +103,6 @@ with st.sidebar:
             dados = []
             for _, row in df_import.iterrows():
                 cod = str(row.iloc[0]).strip()
-                # FILTRO RÍGIDO PARA EVITAR CONTA SINTÉTICA (Garante os 953M)
                 if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) > 10:
                     is_ded = cod.startswith('9')
                     dados.append((int(mes_ref), int(ano_ref), cod, row.iloc[1], 
@@ -116,15 +113,16 @@ with st.sidebar:
                 conn.execute("DELETE FROM receitas WHERE mes = ? AND ano = ?", (int(mes_ref), int(ano_ref)))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?,?)", dados)
                 conn.commit()
-                st.success("✅ Dados processados com sucesso!")
+                st.success("✅ Dados processados!")
         conn.close()
         st.rerun()
 
-# --- CARGA E LIMPEZA DE NONES ---
+# --- CARGA E LIMPEZA TOTAL ---
 conn = sqlite3.connect(DB_NAME)
 df_raw = pd.read_sql("SELECT * FROM receitas", conn)
 conn.close()
-# Limpa qualquer "None" que venha do banco de dados para a página ficar limpa
+
+# Forçando a limpeza de qualquer tipo de Nulo ou "None" textual
 df_raw = df_raw.fillna("")
 df_raw = df_raw.replace("None", "")
 
@@ -132,7 +130,6 @@ df_raw = df_raw.replace("None", "")
 if not df_raw.empty:
     st.title("📊 Painel Orçamentário Profissional")
     
-    # Filtros
     c1, c2, c3 = st.columns([1, 1, 2])
     anos_disp = sorted(df_raw['ano'].unique(), reverse=True)
     with c1: anos_sel = st.multiselect("Anos:", anos_disp, default=anos_disp)
@@ -149,16 +146,15 @@ if not df_raw.empty:
     if not df_f.empty:
         df_f = df_f.sort_values(['ano', 'mes'])
         
-        # VOLTA DOS VALORES NO DASHBOARD (KPIs)
+        # KPIs (Resumo do Topo)
         st.divider()
         k1, k2, k3 = st.columns(3)
-        # Orçado: Soma o último valor orçado de cada conta por ano selecionado
         val_orc = df_f.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
         val_real = df_f['realizado_mes'].sum()
         
-        k1.metric("Orçado (Período Selecionado)", f"R$ {val_orc:,.2f}")
-        k2.metric("Realizado (Período Selecionado)", f"R$ {val_real:,.2f}")
-        k3.metric("Atingimento Global", f"{(val_real/val_orc*100 if val_orc != 0 else 0):.1f}%")
+        k1.metric("Orçado (Período)", f"R$ {val_orc:,.2f}")
+        k2.metric("Realizado (Período)", f"R$ {val_real:,.2f}")
+        k3.metric("Atingimento", f"{(val_real/val_orc*100 if val_orc != 0 else 0):.1f}%")
 
         # Gráfico
         df_g = df_f.groupby(['ano', 'mes'])[['realizado_mes', 'previsao_mes']].sum().reset_index()
@@ -173,11 +169,12 @@ if not df_raw.empty:
         st.divider()
         try:
             pdf_bytes = gerar_pdf_com_grafico(df_f, fig)
-            st.download_button(label="📄 Baixar Relatório PDF (Cravado 953M)", data=pdf_bytes, file_name="relatorio_gestao.pdf", mime="application/pdf")
+            st.download_button(label="📄 Baixar Relatório PDF Limpo", data=pdf_bytes, file_name="relatorio_gestao.pdf", mime="application/pdf")
         except:
-            st.warning("🔄 O sistema está gerando o arquivo...")
+            st.warning("🔄 Processando gráfico para o PDF...")
 
-        with st.expander("📋 Tabela de Naturezas"):
+        with st.expander("📋 Tabela de Naturezas (Analítica)"):
+            # Exibe a tabela final formatada e sem "None"
             st.dataframe(df_f[['codigo_full', 'natureza', 'realizado_mes', 'orcado_anual']], width="stretch")
 else:
     st.info("Aguardando importação de dados.")
