@@ -36,23 +36,20 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
     pdf.set_font("helvetica", "B", 18)
     pdf.cell(190, 10, "Relatorio de Gestao Orcamentaria", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.set_font("helvetica", "", 10)
-    pdf.cell(190, 10, "Filtros aplicados: Selecao do Dashboard", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+    pdf.cell(190, 10, "Consolidado do Periodo Selecionado", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.ln(5)
     
-    # Exportar gráfico (Usando motor engine="kaleido" explícito)
+    # Gráfico
     try:
-        # Gerar imagem do gráfico em alta resolução
         img_bytes = fig_plotly.to_image(format="png", width=1000, height=500, engine="kaleido")
         pdf.image(io.BytesIO(img_bytes), x=10, y=40, w=190)
         pdf.ln(95) 
-    except Exception as e:
-        pdf.set_font("helvetica", "I", 10)
-        pdf.cell(190, 10, f"(Gráfico indisponível no PDF - Erro técnico)", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
-        pdf.ln(5)
+    except:
+        pdf.ln(10)
 
-    # Tabela formatada
+    # Tabela
     pdf.set_font("helvetica", "B", 10)
-    pdf.set_fill_color(46, 125, 50) # Verde do Realizado
+    pdf.set_fill_color(46, 125, 50) 
     pdf.set_text_color(255, 255, 255)
     pdf.cell(35, 8, "Cod. Natureza", 1, 0, "C", True)
     pdf.cell(85, 8, "Descricao", 1, 0, "C", True)
@@ -61,15 +58,34 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
     
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("helvetica", "", 7)
+    
+    total_realizado = 0
+    total_orcado = 0
     fill = False
+    
     for _, row in df_filtrado.iterrows():
+        # Limpeza de None
+        codigo = str(row['codigo_full']) if row['codigo_full'] and str(row['codigo_full']) != 'None' else ""
+        natureza = str(row['natureza']) if row['natureza'] and str(row['natureza']) != 'None' else ""
+        realizado = float(row['realizado_mes'])
+        orcado = float(row['orcado_anual'])
+        
+        total_realizado += realizado
+        total_orcado += orcado
+        
         pdf.set_fill_color(245, 245, 245) if fill else pdf.set_fill_color(255, 255, 255)
-        desc = str(row['natureza'])[:55]
-        pdf.cell(35, 7, str(row['codigo_full'])[:15], 1, 0, 'L', fill)
-        pdf.cell(85, 7, desc, 1, 0, 'L', fill)
-        pdf.cell(35, 7, f"{row['realizado_mes']:,.2f}", 1, 0, 'R', fill)
-        pdf.cell(35, 7, f"{row['orcado_anual']:,.2f}", 1, 1, 'R', fill)
+        pdf.cell(35, 7, codigo[:15], 1, 0, 'L', fill)
+        pdf.cell(85, 7, natureza[:55], 1, 0, 'L', fill)
+        pdf.cell(35, 7, f"{realizado:,.2f}", 1, 0, 'R', fill)
+        pdf.cell(35, 7, f"{orcado:,.2f}", 1, 1, 'R', fill)
         fill = not fill
+        
+    # --- LINHA DE TOTAIS ---
+    pdf.set_font("helvetica", "B", 8)
+    pdf.set_fill_color(200, 200, 200)
+    pdf.cell(120, 8, "TOTAIS CONSOLIDADOS", 1, 0, 'R', True)
+    pdf.cell(35, 8, f"{total_realizado:,.2f}", 1, 0, 'R', True)
+    pdf.cell(35, 8, f"{total_orcado:,.2f}", 1, 1, 'R', True)
     
     return bytes(pdf.output())
 
@@ -138,18 +154,17 @@ if not df_raw.empty:
         fig.add_trace(go.Bar(x=df_g['label'], y=df_g['realizado_mes'], name="Realizado", marker_color='#2E7D32'))
         fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao_mes'], name="Previsão", line=dict(color='#FF9800', width=3, dash='dot')))
         fig.update_layout(height=450, hovermode="x unified", legend=dict(orientation="h", y=1.1))
-        
         st.plotly_chart(fig, width="stretch")
 
         # Botão PDF
         st.divider()
         try:
             pdf_bytes = gerar_pdf_com_grafico(df_f, fig)
-            st.download_button(label="📄 Baixar Relatório PDF Completo", data=pdf_bytes, file_name="relatorio_orcamentario.pdf", mime="application/pdf")
+            st.download_button(label="📄 Baixar Relatório PDF com Totais", data=pdf_bytes, file_name="relatorio_final.pdf", mime="application/pdf")
         except:
-            st.warning("🔄 Processando gráfico para o PDF... Clique novamente em instantes.")
+            st.warning("🔄 Processando dados para o PDF...")
 
         with st.expander("📋 Ver Detalhamento"):
             st.dataframe(df_f[['codigo_full', 'natureza', 'realizado_mes', 'orcado_anual']], width="stretch")
 else:
-    st.info("Nenhum dado encontrado. Faça a importação na barra lateral.")
+    st.info("Nenhum dado encontrado.")
