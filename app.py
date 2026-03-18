@@ -31,21 +31,48 @@ def limpar_valor(valor, eh_dedutora=False):
 def gerar_pdf(df_filtrado, fig_plotly):
     pdf = FPDF()
     pdf.add_page()
+    
+    # Título
     pdf.set_font("helvetica", "B", 16)
     pdf.cell(190, 10, "Relatorio de Gestao Orcamentaria", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+    
+    # Gráfico
     try:
         img_bytes = fig_plotly.to_image(format="png", width=800, height=400, engine="kaleido")
         pdf.image(io.BytesIO(img_bytes), x=15, y=30, w=180)
         pdf.ln(85)
     except: pdf.ln(10)
+    
+    # Tabela - Cabeçalho
     pdf.set_font("helvetica", "B", 10)
-    pdf.cell(40, 8, "Cod. Natureza", 1); pdf.cell(80, 8, "Natureza", 1); pdf.cell(35, 8, "Realizado", 1); pdf.cell(35, 8, "Orcado", 1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.set_fill_color(230, 230, 230)
+    pdf.cell(40, 8, "Cod. Natureza", 1, 0, "C", True)
+    pdf.cell(80, 8, "Natureza", 1, 0, "C", True)
+    pdf.cell(35, 8, "Realizado", 1, 0, "C", True)
+    pdf.cell(35, 8, "Orcado", 1, 1, "C", True)
+    
     pdf.set_font("helvetica", "", 7)
+    total_r = 0
+    total_o = 0
+    
     for _, row in df_filtrado.iterrows():
+        r = float(row['realizado_mes'])
+        o = float(row['orcado_anual'])
+        total_r += r
+        total_o += o
+        
         pdf.cell(40, 7, str(row['codigo_full']), 1)
         pdf.cell(80, 7, str(row['natureza'])[:50], 1)
-        pdf.cell(35, 7, f"{row['realizado_mes']:,.2f}", 1)
-        pdf.cell(35, 7, f"{row['orcado_anual']:,.2f}", 1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(35, 7, f"{r:,.2f}", 1, 0, "R")
+        pdf.cell(35, 7, f"{o:,.2f}", 1, 1, "R")
+        
+    # --- LINHA DE TOTAIS NO PDF ---
+    pdf.set_font("helvetica", "B", 9)
+    pdf.set_fill_color(200, 200, 200)
+    pdf.cell(120, 9, "TOTAIS CONSOLIDADOS", 1, 0, "R", True)
+    pdf.cell(35, 9, f"{total_r:,.2f}", 1, 0, "R", True)
+    pdf.cell(35, 9, f"{total_o:,.2f}", 1, 1, "R", True)
+    
     return bytes(pdf.output())
 
 inicializar_banco()
@@ -55,8 +82,7 @@ with st.sidebar:
     st.header("📥 Gestão de Dados")
     arquivo = st.file_uploader("Upload FIPLAN (.xlsx)", type=["xlsx", "csv"])
     
-    # Seletores Fixos
-    mes_ref = st.selectbox("Mês de Referência", range(1, 13), index=1, format_func=lambda x: MESES_NOMES[x-1])
+    mes_ref = st.selectbox("Mês de Referência", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
     ano_ref = st.number_input("Ano de Referência", value=2026)
     
     if arquivo and st.button("🚀 Processar Dados"):
@@ -70,7 +96,7 @@ with st.sidebar:
             for _, row in df_import.iterrows():
                 cod = str(row.iloc[0]).strip()
                 nat = str(row.iloc[1]).strip()
-                # VOLTA DA REGRA ORIGINAL: Mata os bilhões e os Nones
+                # REGRA DE OURO ORIGINAL (Mantém os 953M)
                 if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) > 10 and nat != "None":
                     is_ded = cod.startswith('9')
                     dados.append((int(mes_ref), int(ano_ref), cod, nat, 
@@ -81,7 +107,7 @@ with st.sidebar:
                 conn.execute("DELETE FROM receitas WHERE mes = ? AND ano = ?", (int(mes_ref), int(ano_ref)))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?,?)", dados)
                 conn.commit()
-                st.success("Dados Salvos!")
+                st.success("Dados Salvos com Sucesso!")
         conn.close()
         st.rerun()
 
@@ -95,7 +121,7 @@ df_raw = pd.read_sql("SELECT * FROM receitas WHERE natureza != 'None' AND nature
 conn.close()
 
 if not df_raw.empty:
-    st.title("📊 Painel de Receitas")
+    st.title("📊 Painel Orçamentário")
     
     c1, c2, c3 = st.columns([1, 1, 2])
     anos_sel = c1.multiselect("Anos:", sorted(df_raw['ano'].unique()), default=df_raw['ano'].unique())
@@ -107,12 +133,12 @@ if not df_raw.empty:
     if nat_sel: df_f = df_f[df_f['natureza'].isin(nat_sel)]
 
     if not df_f.empty:
-        # KPIs - Lógica correta de soma
+        # KPIs
         k1, k2, k3 = st.columns(3)
         v_orc = df_f.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
         v_real = df_f['realizado_mes'].sum()
-        k1.metric("Orçado", f"R$ {v_orc:,.2f}")
-        k2.metric("Realizado", f"R$ {v_real:,.2f}")
+        k1.metric("Orçado Total", f"R$ {v_orc:,.2f}")
+        k2.metric("Realizado Total", f"R$ {v_real:,.2f}")
         k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
 
         # Gráfico
@@ -123,9 +149,9 @@ if not df_raw.empty:
         fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao_mes'], name="Previsão", line=dict(color='#FF9800', width=3, dash='dot')))
         st.plotly_chart(fig, use_container_width=True)
         
-        st.download_button("📄 Baixar PDF", data=gerar_pdf(df_f, fig), file_name="relatorio.pdf")
+        st.download_button("📄 Baixar Relatório PDF", data=gerar_pdf(df_f, fig), file_name="relatorio_final.pdf")
     
     st.sidebar.divider()
     st.sidebar.download_button("📥 Backup CSV", df_raw.to_csv(index=False).encode('utf-8'), "backup.csv")
 else:
-    st.info("Importe dados para começar.")
+    st.info("Aguardando importação de dados.")
