@@ -32,38 +32,44 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
     pdf = FPDF()
     pdf.add_page()
     
-    # Título (Usando novos comandos XPos e YPos para evitar warnings)
+    # Título
     pdf.set_font("helvetica", "B", 18)
     pdf.cell(190, 10, "Relatorio de Gestao Orcamentaria", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.set_font("helvetica", "", 10)
     pdf.cell(190, 10, "Filtros aplicados: Selecao do Dashboard", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.ln(5)
     
-    # Exportar gráfico (Kaleido)
+    # Exportar gráfico (Usando motor engine="kaleido" explícito)
     try:
-        img_bytes = fig_plotly.to_image(format="png", width=800, height=400)
-        # Salvando em buffer para não depender de arquivo físico
-        pdf.image(io.BytesIO(img_bytes), x=15, y=40, w=180)
-        pdf.ln(90) 
-    except:
-        pdf.cell(190, 10, "(Erro ao renderizar grafico no PDF)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        # Gerar imagem do gráfico em alta resolução
+        img_bytes = fig_plotly.to_image(format="png", width=1000, height=500, engine="kaleido")
+        pdf.image(io.BytesIO(img_bytes), x=10, y=40, w=190)
+        pdf.ln(95) 
+    except Exception as e:
+        pdf.set_font("helvetica", "I", 10)
+        pdf.cell(190, 10, f"(Gráfico indisponível no PDF - Erro técnico)", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+        pdf.ln(5)
 
-    # Tabela
+    # Tabela formatada
     pdf.set_font("helvetica", "B", 10)
-    pdf.set_fill_color(230, 230, 230)
+    pdf.set_fill_color(46, 125, 50) # Verde do Realizado
+    pdf.set_text_color(255, 255, 255)
     pdf.cell(35, 8, "Cod. Natureza", 1, 0, "C", True)
     pdf.cell(85, 8, "Descricao", 1, 0, "C", True)
-    pdf.cell(35, 8, "Realizado", 1, 0, "C", True)
-    pdf.cell(35, 8, "Orcado", 1, 1, "C", True)
+    pdf.cell(35, 8, "Realizado (R$)", 1, 0, "C", True)
+    pdf.cell(35, 8, "Orcado (R$)", 1, 1, "C", True)
     
+    pdf.set_text_color(0, 0, 0)
     pdf.set_font("helvetica", "", 7)
+    fill = False
     for _, row in df_filtrado.iterrows():
+        pdf.set_fill_color(245, 245, 245) if fill else pdf.set_fill_color(255, 255, 255)
         desc = str(row['natureza'])[:55]
-        pdf.cell(35, 7, str(row['codigo_full'])[:15], 1)
-        pdf.cell(85, 7, desc, 1)
-        pdf.cell(35, 7, f"{row['realizado_mes']:,.2f}", 1)
-        pdf.cell(35, 7, f"{row['orcado_anual']:,.2f}", 1)
-        pdf.ln()
+        pdf.cell(35, 7, str(row['codigo_full'])[:15], 1, 0, 'L', fill)
+        pdf.cell(85, 7, desc, 1, 0, 'L', fill)
+        pdf.cell(35, 7, f"{row['realizado_mes']:,.2f}", 1, 0, 'R', fill)
+        pdf.cell(35, 7, f"{row['orcado_anual']:,.2f}", 1, 1, 'R', fill)
+        fill = not fill
     
     return bytes(pdf.output())
 
@@ -72,15 +78,14 @@ inicializar_banco()
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("📥 Gestão de Dados")
-    arquivo = st.file_uploader("FIPLAN (.xlsx) ou Backup (.csv)", type=["xlsx", "csv"])
+    arquivo = st.file_uploader("Subir FIPLAN (.xlsx) ou Backup (.csv)", type=["xlsx", "csv"])
     
-    if arquivo and st.button("🚀 Processar"):
+    if arquivo and st.button("🚀 Processar Arquivo"):
         conn = sqlite3.connect(DB_NAME)
         if arquivo.name.endswith('.csv'):
             pd.read_csv(arquivo).to_sql('receitas', conn, if_exists='replace', index=False)
             st.success("✅ Backup restaurado!")
         else:
-            # Seleção de mês/ano só aparece para Excel
             mes_ref = st.selectbox("Mês", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
             ano_ref = st.number_input("Ano", value=2026)
             df_import = pd.read_excel(arquivo, skiprows=7)
@@ -97,7 +102,7 @@ with st.sidebar:
                 conn.execute("DELETE FROM receitas WHERE mes = ? AND ano = ?", (int(mes_ref), int(ano_ref)))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?,?)", dados)
                 conn.commit()
-                st.success("✅ Dados salvos!")
+                st.success("✅ Dados importados!")
         conn.close()
         st.rerun()
 
@@ -107,7 +112,7 @@ df_raw = pd.read_sql("SELECT * FROM receitas", conn)
 conn.close()
 
 if not df_raw.empty:
-    st.title("📊 Gestão Orçamentária")
+    st.title("📊 Painel Orçamentário Profissional")
     
     c1, c2, c3 = st.columns([1, 1, 2])
     anos_disp = sorted(df_raw['ano'].unique(), reverse=True)
@@ -117,14 +122,13 @@ if not df_raw.empty:
         meses_sel = st.multiselect("Meses:", meses_disp, default=meses_disp, format_func=lambda x: MESES_NOMES[x-1])
     with c3:
         naturezas = sorted(df_raw['natureza'].unique())
-        nat_sel = st.multiselect("Naturezas:", naturezas)
+        nat_sel = st.multiselect("Filtrar Naturezas:", naturezas)
     
     df_f = df_raw[df_raw['ano'].isin(anos_sel) & df_raw['mes'].isin(meses_sel)].copy()
     if nat_sel: df_f = df_f[df_f['natureza'].isin(nat_sel)]
 
     if not df_f.empty:
         df_f = df_f.sort_values(['ano', 'mes'])
-        st.divider()
         
         # Gráfico
         df_g = df_f.groupby(['ano', 'mes'])[['realizado_mes', 'previsao_mes']].sum().reset_index()
@@ -133,19 +137,19 @@ if not df_raw.empty:
         fig = go.Figure()
         fig.add_trace(go.Bar(x=df_g['label'], y=df_g['realizado_mes'], name="Realizado", marker_color='#2E7D32'))
         fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao_mes'], name="Previsão", line=dict(color='#FF9800', width=3, dash='dot')))
-        fig.update_layout(title="Evolução Mensal", hovermode="x unified", legend=dict(orientation="h", y=1.1))
+        fig.update_layout(height=450, hovermode="x unified", legend=dict(orientation="h", y=1.1))
+        
         st.plotly_chart(fig, width="stretch")
 
         # Botão PDF
         st.divider()
         try:
-            # Geramos os bytes do PDF em tempo real para o botão
-            pdf_out = gerar_pdf_com_grafico(df_f, fig)
-            st.download_button(label="📄 Baixar Relatório PDF", data=pdf_out, file_name="relatorio_gestao.pdf", mime="application/pdf")
-        except Exception as e:
-            st.warning("O sistema está preparando o PDF... Se persistir, verifique a conexão.")
+            pdf_bytes = gerar_pdf_com_grafico(df_f, fig)
+            st.download_button(label="📄 Baixar Relatório PDF Completo", data=pdf_bytes, file_name="relatorio_orcamentario.pdf", mime="application/pdf")
+        except:
+            st.warning("🔄 Processando gráfico para o PDF... Clique novamente em instantes.")
 
-        with st.expander("📋 Detalhamento"):
+        with st.expander("📋 Ver Detalhamento"):
             st.dataframe(df_f[['codigo_full', 'natureza', 'realizado_mes', 'orcado_anual']], width="stretch")
 else:
-    st.info("Importe dados para começar.")
+    st.info("Nenhum dado encontrado. Faça a importação na barra lateral.")
