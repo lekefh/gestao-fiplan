@@ -119,7 +119,7 @@ df_raw = pd.read_sql("SELECT * FROM receitas WHERE natureza != 'None' AND nature
 conn.close()
 
 if not df_raw.empty:
-    st.title("📊 Painel Orçamentário Profissional")
+    st.title("📊 Painel Orçamentário")
     
     c1, c2, c3 = st.columns([1, 1, 2])
     anos_sel = c1.multiselect("Anos:", sorted(df_raw['ano'].unique()), default=df_raw['ano'].unique())
