@@ -4,8 +4,6 @@ import sqlite3
 import plotly.graph_objects as go
 import re
 from fpdf import FPDF
-import base64
-
 
 # --- CONFIGURAÇÕES ---
 DB_NAME = 'dados_gestao.db'
@@ -28,49 +26,37 @@ def limpar_valor(valor, eh_dedutora=False):
         return num * -1 if eh_dedutora else num
     except: return 0.0
 
-# Função para gerar o PDF
 def gerar_pdf(df_filtrado):
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Arial", "B", 16)
+    pdf.set_font("helvetica", "B", 16)
     pdf.cell(190, 10, "Relatorio de Gestao Orcamentaria", ln=True, align="C")
     pdf.ln(10)
     
-    pdf.set_font("Arial", "B", 10)
-    # Cabeçalho
+    pdf.set_font("helvetica", "B", 10)
     pdf.cell(35, 10, "Cod. Natureza", 1)
     pdf.cell(85, 10, "Descricao", 1)
     pdf.cell(35, 10, "Realizado (R$)", 1)
     pdf.cell(35, 10, "Orcado (R$)", 1)
     pdf.ln()
     
-    pdf.set_font("Arial", "", 8)
+    pdf.set_font("helvetica", "", 8)
     for _, row in df_filtrado.iterrows():
-        # Limita o texto para não transbordar na tabela do PDF
-        descricao = str(row['natureza'])[:50]
+        descricao = str(row['natureza'])[:45]
         pdf.cell(35, 8, str(row['codigo_full'])[:15], 1)
         pdf.cell(85, 8, descricao, 1)
         pdf.cell(35, 8, f"{row['realizado_mes']:,.2f}", 1)
         pdf.cell(35, 8, f"{row['orcado_anual']:,.2f}", 1)
         pdf.ln()
     
-    # Retorna o PDF pronto para o Streamlit
     return pdf.output()
-
-# No botão de download lá embaixo, use:
-st.download_button(
-    label="📄 Baixar Relatório em PDF",
-    data=gerar_pdf(df_f), # Remova o .encode() se estiver usando fpdf2
-    file_name="relatorio_orcamentario.pdf",
-    mime="application/pdf"
-)
 
 inicializar_banco()
 
-# --- SIDEBAR ---
+# --- SIDEBAR: GESTÃO DE DADOS ---
 with st.sidebar:
     st.header("📥 Gestão de Dados")
-    arquivo = st.file_uploader("Selecione o FIPLAN (.xlsx) ou Backup (.csv)", type=["xlsx", "csv"])
+    arquivo = st.file_uploader("Selecione FIPLAN (.xlsx) ou Backup (.csv)", type=["xlsx", "csv"])
     
     if arquivo and arquivo.name.endswith('.xlsx'):
         mes_ref = st.selectbox("Mês do Arquivo", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
@@ -89,7 +75,8 @@ with st.sidebar:
                 dados = []
                 for _, row in df_import.iterrows():
                     cod = str(row.iloc[0]).strip()
-                    if re.match(r'^\d', cod) and not cod.endswith('.0') and len(cod) > 10:
+                    # Filtro analítico: evita subtotais e contas sintéticas
+                    if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) > 10:
                         is_ded = cod.startswith('9')
                         dados.append((int(mes_ref), int(ano_ref), cod, row.iloc[1], 
                                      limpar_valor(row.iloc[3], is_ded), limpar_valor(row.iloc[5], is_ded),
@@ -104,27 +91,28 @@ with st.sidebar:
             conn.close()
             st.rerun()
     
-    # Download de Backup CSV
+    # Download de Backup
     conn = sqlite3.connect(DB_NAME)
     df_raw = pd.read_sql("SELECT * FROM receitas", conn)
     conn.close()
     if not df_raw.empty:
-        csv = df_raw.to_csv(index=False).encode('utf-8')
+        csv_data = df_raw.to_csv(index=False).encode('utf-8')
         st.sidebar.divider()
-        st.sidebar.download_button("📥 Baixar Backup CSV", csv, "gestao_backup.csv", "text/csv")
+        st.sidebar.download_button("📥 Baixar Backup CSV", csv_data, "gestao_backup.csv", "text/csv")
 
-# --- DASHBOARD PRINCIPAL ---
+# --- DASHBOARD ---
 if not df_raw.empty:
-    st.title("📊 Painel Orçamentário")
+    st.title("📊 Painel de Gestão Orçamentária")
     
     # Filtros
-    c1, c2, c3 = st.columns([1, 1, 2])
+    st.markdown("### 🔍 Filtros de Visualização")
+    c_f1, c_f2, c_f3 = st.columns([1, 1, 2])
     anos_disp = sorted(df_raw['ano'].unique(), reverse=True)
-    with c1: anos_sel = st.multiselect("Anos:", anos_disp, default=anos_disp)
-    with c2:
+    with c_f1: anos_sel = st.multiselect("Anos:", anos_disp, default=anos_disp)
+    with c_f2:
         meses_disp = sorted(df_raw['mes'].unique())
         meses_sel = st.multiselect("Meses:", meses_disp, default=meses_disp, format_func=lambda x: MESES_NOMES[x-1])
-    with c3:
+    with c_f3:
         naturezas = sorted(df_raw['natureza'].unique())
         nat_sel = st.multiselect("Filtrar Naturezas:", naturezas)
     
@@ -149,24 +137,22 @@ if not df_raw.empty:
         fig = go.Figure()
         fig.add_trace(go.Bar(x=df_g['label'], y=df_g['realizado_mes'], name="Realizado", marker_color='#2E7D32'))
         fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao_mes'], name="Previsão", line=dict(color='#FF9800', width=3, dash='dot')))
+        fig.update_layout(hovermode="x unified", legend=dict(orientation="h", y=1.1))
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- NOVA SEÇÃO: JANELA DE NATUREZAS (EXPANDER) ---
+        # Detalhamento (Expander)
         st.subheader("📋 Detalhamento por Natureza")
-        with st.expander("Clique aqui para ver a lista completa de naturezas e valores"):
-            # Ajustando a tabela para exibição amigável
-            df_table = df_f[['codigo_full', 'natureza', 'realizado_mes', 'orcado_anual']].copy()
-            df_table.columns = ['Código', 'Natureza de Receita', 'Realizado (R$)', 'Orçado Anual (R$)']
-            st.dataframe(df_table.style.format({'Realizado (R$)': '{:,.2f}', 'Orçado Anual (R$)': '{:,.2f}'}), use_container_width=True)
+        with st.expander("Clique para abrir a lista de naturezas"):
+            df_exibe = df_f[['codigo_full', 'natureza', 'realizado_mes', 'orcado_anual']].copy()
+            df_exibe.columns = ['Código', 'Natureza', 'Realizado (R$)', 'Orçado Anual (R$)']
+            st.dataframe(df_exibe.style.format({'Realizado (R$)': '{:,.2f}', 'Orçado Anual (R$)': '{:,.2f}'}), use_container_width=True)
 
-        # --- BOTÃO PARA SALVAR PDF ---
+        # Botão PDF
         st.divider()
-        pdf_data = gerar_pdf(df_f)
-        st.download_button(
-            label="📄 Baixar Relatório em PDF",
-            data=pdf_data,
-            file_name="relatorio_orcamentario.pdf",
-            mime="application/pdf"
-        )
+        try:
+            pdf_bytes = gerar_pdf(df_f)
+            st.download_button(label="📄 Baixar Relatório em PDF", data=pdf_bytes, file_name="relatorio_orcamentario.pdf", mime="application/pdf")
+        except Exception as e:
+            st.warning(f"Erro ao gerar PDF: {e}")
 else:
     st.info("Aguardando importação de dados.")
