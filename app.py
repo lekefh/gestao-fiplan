@@ -27,41 +27,47 @@ def limpar_valor(valor, eh_dedutora=False):
 
 inicializar_banco()
 
-# --- SIDEBAR: IMPORTAÇÃO E BACKUP ---
+# --- SIDEBAR: IMPORTAÇÃO ---
 with st.sidebar:
     st.header("📥 Gestão de Dados")
-    # Upload do FIPLAN
     mes_ref = st.selectbox("Mês", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
     ano_ref = st.number_input("Ano", value=2026)
     arquivo = st.file_uploader("Upload Excel FIPLAN", type=["xlsx", "csv"])
     
     if arquivo and st.button("🚀 Salvar Dados"):
         if arquivo.name.endswith('.csv'):
-            # Lógica para restaurar backup
             df_backup = pd.read_csv(arquivo)
             conn = sqlite3.connect(DB_NAME)
             df_backup.to_sql('receitas', conn, if_exists='replace', index=False)
             conn.close()
             st.success("Backup restaurado!")
         else:
-            # Lógica para novo arquivo FIPLAN
             df_import = pd.read_excel(arquivo, skiprows=7)
             dados = []
             for _, row in df_import.iterrows():
                 cod = str(row.iloc[0]).strip()
-                if re.match(r'^\d', cod) and not cod.endswith('.0') and len(cod) > 12:
+                
+                # --- FILTRO REFORÇADO: REGRAS DO FIPLAN ---
+                # 1. Deve começar com número
+                # 2. NÃO pode terminar com .0 ou .00 (Subtotais)
+                # 3. Deve ter mais de 10 caracteres (Contas analíticas são longas)
+                if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) > 10:
                     is_ded = cod.startswith('9')
                     dados.append((int(mes_ref), int(ano_ref), cod, row.iloc[1], 
                                  limpar_valor(row.iloc[3], is_ded), limpar_valor(row.iloc[5], is_ded),
                                  limpar_valor(row.iloc[6], is_ded), limpar_valor(row.iloc[9], is_ded),
                                  limpar_valor(row.iloc[10], is_ded)))
+            
             if dados:
                 conn = sqlite3.connect(DB_NAME)
+                # Limpa o mês/ano atual para evitar duplicidade no "re-upload"
                 conn.execute("DELETE FROM receitas WHERE mes = ? AND ano = ?", (int(mes_ref), int(ano_ref)))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?,?)", dados)
                 conn.commit()
                 conn.close()
-                st.success("Dados salvos!")
+                st.success(f"Foram importadas {len(dados)} linhas analíticas!")
+            else:
+                st.warning("Nenhuma conta analítica encontrada. Verifique o formato do arquivo.")
         st.rerun()
 
 # --- DASHBOARD ---
@@ -78,7 +84,7 @@ if not df_raw.empty:
     with c1: anos_sel = st.multiselect("Anos:", anos_disp, default=anos_disp)
     with c2: 
         naturezas = sorted(df_raw['natureza'].unique())
-        nat_sel = st.multiselect("Naturezas:", naturezas)
+        nat_sel = st.multiselect("Filtrar Naturezas:", naturezas)
     
     df_f = df_raw[df_raw['ano'].isin(anos_sel)].copy()
     if nat_sel: df_f = df_f[df_f['natureza'].isin(nat_sel)]
@@ -86,15 +92,19 @@ if not df_raw.empty:
     if not df_f.empty:
         df_f = df_f.sort_values(['ano', 'mes'])
         
-        # KPIs
+        # KPIs (Soma apenas o último orçado de cada conta única para evitar duplicar orçamentos mensais)
+        st.divider()
         k1, k2, k3 = st.columns(3)
-        orc = df_f.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
-        real = df_f['realizado_mes'].sum()
-        k1.metric("Orçado Total", f"R$ {orc:,.2f}")
-        k2.metric("Realizado Total", f"R$ {real:,.2f}")
-        k3.metric("Atingimento", f"{(real/orc*100 if orc != 0 else 0):.1f}%")
+        
+        orc_total = df_f.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
+        real_total = df_f['realizado_mes'].sum()
+        
+        k1.metric("Orçado Total (Período)", f"R$ {orc_total:,.2f}")
+        k2.metric("Realizado Total", f"R$ {real_total:,.2f}")
+        k3.metric("Atingimento Global", f"{(real_total/orc_total*100 if orc_total != 0 else 0):.1f}%")
 
         # Gráfico
+        st.subheader("📈 Realizado vs Previsão")
         df_g = df_f.groupby(['ano', 'mes'])[['realizado_mes', 'previsao_mes']].sum().reset_index()
         df_g['label'] = df_g.apply(lambda x: f"{MESES_NOMES[int(x['mes'])-1]}/{str(int(x['ano']))[2:]}", axis=1)
 
