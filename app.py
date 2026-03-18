@@ -6,6 +6,7 @@ import re
 from fpdf import FPDF
 import base64
 
+
 # --- CONFIGURAÇÕES ---
 DB_NAME = 'dados_gestao.db'
 st.set_page_config(page_title="Gestão Orçamentária Pro", layout="wide")
@@ -36,22 +37,33 @@ def gerar_pdf(df_filtrado):
     pdf.ln(10)
     
     pdf.set_font("Arial", "B", 10)
-    # Cabeçalho da tabela no PDF
-    pdf.cell(30, 10, "Cod. Natureza", 1)
-    pdf.cell(80, 10, "Descricao", 1)
-    pdf.cell(40, 10, "Realizado (R$)", 1)
-    pdf.cell(40, 10, "Orcado (R$)", 1)
+    # Cabeçalho
+    pdf.cell(35, 10, "Cod. Natureza", 1)
+    pdf.cell(85, 10, "Descricao", 1)
+    pdf.cell(35, 10, "Realizado (R$)", 1)
+    pdf.cell(35, 10, "Orcado (R$)", 1)
     pdf.ln()
     
     pdf.set_font("Arial", "", 8)
     for _, row in df_filtrado.iterrows():
-        pdf.cell(30, 8, str(row['codigo_full'])[:12], 1)
-        pdf.cell(80, 8, str(row['natureza'])[:45], 1)
-        pdf.cell(40, 8, f"{row['realizado_mes']:,.2f}", 1)
-        pdf.cell(40, 8, f"{row['orcado_anual']:,.2f}", 1)
+        # Limita o texto para não transbordar na tabela do PDF
+        descricao = str(row['natureza'])[:50]
+        pdf.cell(35, 8, str(row['codigo_full'])[:15], 1)
+        pdf.cell(85, 8, descricao, 1)
+        pdf.cell(35, 8, f"{row['realizado_mes']:,.2f}", 1)
+        pdf.cell(35, 8, f"{row['orcado_anual']:,.2f}", 1)
         pdf.ln()
     
-    return pdf.output(dest="S").encode("latin-1")
+    # Retorna o PDF pronto para o Streamlit
+    return pdf.output()
+
+# No botão de download lá embaixo, use:
+st.download_button(
+    label="📄 Baixar Relatório em PDF",
+    data=gerar_pdf(df_f), # Remova o .encode() se estiver usando fpdf2
+    file_name="relatorio_orcamentario.pdf",
+    mime="application/pdf"
+)
 
 inicializar_banco()
 
