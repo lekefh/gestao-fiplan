@@ -62,7 +62,6 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
     for _, row in df_filtrado.iterrows():
         cod = str(row['codigo_full']).strip()
         nat = str(row['natureza']).strip()
-        
         pdf.set_fill_color(245, 245, 245) if fill else pdf.set_fill_color(255, 255, 255)
         pdf.cell(35, 7, cod[:15], 1, 0, 'L', fill)
         pdf.cell(85, 7, nat[:55], 1, 0, 'L', fill)
@@ -80,10 +79,10 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
 
 inicializar_banco()
 
-# --- SIDEBAR ---
+# --- SIDEBAR: GESTÃO E LIMPEZA ---
 with st.sidebar:
     st.header("📥 Gestão de Dados")
-    arquivo = st.file_uploader("FIPLAN (.xlsx) ou Backup (.csv)", type=["xlsx", "csv"])
+    arquivo = st.file_uploader("Subir FIPLAN (.xlsx) ou Backup (.csv)", type=["xlsx", "csv"])
     
     if arquivo and st.button("🚀 Processar Arquivo"):
         conn = sqlite3.connect(DB_NAME)
@@ -97,7 +96,6 @@ with st.sidebar:
             dados = []
             for _, row in df_import.iterrows():
                 cod = str(row.iloc[0]).strip()
-                # Filtro analítico rigoroso
                 if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) > 10:
                     is_ded = cod.startswith('9')
                     dados.append((int(mes_ref), int(ano_ref), cod, row.iloc[1], 
@@ -112,15 +110,21 @@ with st.sidebar:
         conn.close()
         st.rerun()
 
-# --- CARGA E LIMPEZA RADICAL DE "NONE" ---
-conn = sqlite3.connect(DB_NAME)
-# Aqui a mágica: filtramos direto no SQL para não trazer lixo
-df_raw = pd.read_sql("SELECT * FROM receitas WHERE codigo_full IS NOT NULL AND natureza != ''", conn)
-conn.close()
+    # BOTÃO PARA LIMPAR O BANCO (RESET)
+    st.sidebar.divider()
+    if st.sidebar.button("🔴 Limpar Tudo e Recomeçar"):
+        conn = sqlite3.connect(DB_NAME)
+        conn.execute("DELETE FROM receitas")
+        conn.commit()
+        conn.close()
+        st.success("Banco de dados resetado!")
+        st.rerun()
 
-# Remove qualquer linha que tenha "None" escrito como texto ou natureza vazia
-df_raw = df_raw[df_raw['natureza'].str.contains("None") == False]
-df_raw = df_raw[df_raw['natureza'].str.strip() != ""]
+# --- CARGA E FILTRO RADICAL ---
+conn = sqlite3.connect(DB_NAME)
+# Filtro SQL para ignorar lixo
+df_raw = pd.read_sql("SELECT * FROM receitas WHERE codigo_full IS NOT NULL AND natureza != '' AND natureza != 'None'", conn)
+conn.close()
 
 # --- DASHBOARD ---
 if not df_raw.empty:
@@ -134,8 +138,8 @@ if not df_raw.empty:
         meses_disp = sorted(df_raw['mes'].unique())
         meses_sel = st.multiselect("Meses:", meses_disp, default=meses_disp, format_func=lambda x: MESES_NOMES[x-1])
     with c3:
-        # Filtro de naturezas limpo (sem etiquetas vazias)
-        naturezas = sorted([n for n in df_raw['natureza'].unique() if n and n != "None"])
+        # Pega naturezas que não sejam vazias ou "None"
+        naturezas = sorted([n for n in df_raw['natureza'].unique() if n and str(n).strip() != "" and str(n) != "None"])
         nat_sel = st.multiselect("Filtrar Naturezas:", naturezas)
     
     df_f = df_raw[df_raw['ano'].isin(anos_sel) & df_raw['mes'].isin(meses_sel)].copy()
@@ -144,12 +148,11 @@ if not df_raw.empty:
     if not df_f.empty:
         df_f = df_f.sort_values(['ano', 'mes'])
         
-        # KPIs (Resumo do Topo)
+        # KPIs
         st.divider()
         k1, k2, k3 = st.columns(3)
         val_orc = df_f.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
         val_real = df_f['realizado_mes'].sum()
-        
         k1.metric("Orçado (Período)", f"R$ {val_orc:,.2f}")
         k2.metric("Realizado (Período)", f"R$ {val_real:,.2f}")
         k3.metric("Atingimento", f"{(val_real/val_orc*100 if val_orc != 0 else 0):.1f}%")
@@ -167,11 +170,16 @@ if not df_raw.empty:
         st.divider()
         try:
             pdf_bytes = gerar_pdf_com_grafico(df_f, fig)
-            st.download_button(label="📄 Baixar Relatório PDF Limpo", data=pdf_bytes, file_name="relatorio_gestao.pdf", mime="application/pdf")
+            st.download_button(label="📄 Baixar Relatório PDF", data=pdf_bytes, file_name="relatorio_gestao.pdf", mime="application/pdf")
         except:
             st.warning("🔄 Processando gráfico...")
 
-        with st.expander("📋 Tabela de Naturezas (Analítica)"):
-            st.dataframe(df_f[['codigo_full', 'natureza', 'realizado_mes', 'orcado_anual']], width="stretch")
+    # BOTÃO DE BACKUP (Voltou para a barra lateral)
+    st.sidebar.divider()
+    csv_data = df_raw.to_csv(index=False).encode('utf-8')
+    st.sidebar.download_button("📥 Baixar Backup CSV", csv_data, "gestao_backup.csv", "text/csv")
+
+    with st.expander("📋 Ver Tabela de Dados"):
+        st.dataframe(df_f[['codigo_full', 'natureza', 'realizado_mes', 'orcado_anual']], width="stretch")
 else:
-    st.info("Aguardando importação de dados.")
+    st.info("Nenhum dado encontrado. Use a barra lateral para importar ou resetar.")
