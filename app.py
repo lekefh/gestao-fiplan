@@ -30,8 +30,8 @@ inicializar_banco()
 # --- SIDEBAR: IMPORTAÇÃO ---
 with st.sidebar:
     st.header("📥 Gestão de Dados")
-    mes_ref = st.selectbox("Mês", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
-    ano_ref = st.number_input("Ano", value=2026)
+    mes_ref = st.selectbox("Mês do Arquivo", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
+    ano_ref = st.number_input("Ano do Arquivo", value=2026)
     arquivo = st.file_uploader("Upload Excel FIPLAN", type=["xlsx", "csv"])
     
     if arquivo and st.button("🚀 Salvar Dados"):
@@ -46,11 +46,7 @@ with st.sidebar:
             dados = []
             for _, row in df_import.iterrows():
                 cod = str(row.iloc[0]).strip()
-                
-                # --- FILTRO REFORÇADO: REGRAS DO FIPLAN ---
-                # 1. Deve começar com número
-                # 2. NÃO pode terminar com .0 ou .00 (Subtotais)
-                # 3. Deve ter mais de 10 caracteres (Contas analíticas são longas)
+                # Filtro analítico reforçado
                 if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) > 10:
                     is_ded = cod.startswith('9')
                     dados.append((int(mes_ref), int(ano_ref), cod, row.iloc[1], 
@@ -60,14 +56,11 @@ with st.sidebar:
             
             if dados:
                 conn = sqlite3.connect(DB_NAME)
-                # Limpa o mês/ano atual para evitar duplicidade no "re-upload"
                 conn.execute("DELETE FROM receitas WHERE mes = ? AND ano = ?", (int(mes_ref), int(ano_ref)))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?,?)", dados)
                 conn.commit()
                 conn.close()
-                st.success(f"Foram importadas {len(dados)} linhas analíticas!")
-            else:
-                st.warning("Nenhuma conta analítica encontrada. Verifique o formato do arquivo.")
+                st.success(f"Sucesso! {len(dados)} linhas analíticas importadas.")
         st.rerun()
 
 # --- DASHBOARD ---
@@ -78,44 +71,81 @@ conn.close()
 if not df_raw.empty:
     st.title("📊 Painel Orçamentário")
     
-    # Filtros
-    c1, c2 = st.columns([1, 2])
-    anos_disp = sorted(df_raw['ano'].unique(), reverse=True)
-    with c1: anos_sel = st.multiselect("Anos:", anos_disp, default=anos_disp)
-    with c2: 
-        naturezas = sorted(df_raw['natureza'].unique())
-        nat_sel = st.multiselect("Filtrar Naturezas:", naturezas)
+    # --- FILTROS DE ANÁLISE ---
+    st.markdown("### 🔍 Filtros de Visualização")
+    c1, c2, c3 = st.columns([1, 1, 2])
     
-    df_f = df_raw[df_raw['ano'].isin(anos_sel)].copy()
-    if nat_sel: df_f = df_f[df_f['natureza'].isin(nat_sel)]
+    with c1:
+        anos_disp = sorted(df_raw['ano'].unique(), reverse=True)
+        anos_sel = st.multiselect("Anos:", anos_disp, default=anos_disp)
+    
+    with c2:
+        # Filtro de Meses (Novidade)
+        meses_disp = sorted(df_raw['mes'].unique())
+        meses_sel = st.multiselect(
+            "Meses:", 
+            options=meses_disp, 
+            default=meses_disp,
+            format_func=lambda x: MESES_NOMES[x-1]
+        )
+    
+    with c3: 
+        naturezas = sorted(df_raw['natureza'].unique())
+        nat_sel = st.multiselect("Naturezas:", naturezas)
+    
+    # Aplicando os filtros
+    df_f = df_raw[df_raw['ano'].isin(anos_sel) & df_raw['mes'].isin(meses_sel)].copy()
+    if nat_sel: 
+        df_f = df_f[df_f['natureza'].isin(nat_sel)]
 
     if not df_f.empty:
         df_f = df_f.sort_values(['ano', 'mes'])
         
-        # KPIs (Soma apenas o último orçado de cada conta única para evitar duplicar orçamentos mensais)
+        # KPIs
         st.divider()
         k1, k2, k3 = st.columns(3)
-        
+        # O Orçado anual é fixo por conta/ano. Pegamos o último valor reportado.
         orc_total = df_f.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
         real_total = df_f['realizado_mes'].sum()
         
-        k1.metric("Orçado Total (Período)", f"R$ {orc_total:,.2f}")
-        k2.metric("Realizado Total", f"R$ {real_total:,.2f}")
-        k3.metric("Atingimento Global", f"{(real_total/orc_total*100 if orc_total != 0 else 0):.1f}%")
+        k1.metric("Orçado (Período)", f"R$ {orc_total:,.2f}")
+        k2.metric("Realizado (Período)", f"R$ {real_total:,.2f}")
+        k3.metric("Atingimento", f"{(real_total/orc_total*100 if orc_total != 0 else 0):.1f}%")
 
         # Gráfico
-        st.subheader("📈 Realizado vs Previsão")
+        st.subheader("📈 Comparativo: Realizado vs Previsão")
         df_g = df_f.groupby(['ano', 'mes'])[['realizado_mes', 'previsao_mes']].sum().reset_index()
         df_g['label'] = df_g.apply(lambda x: f"{MESES_NOMES[int(x['mes'])-1]}/{str(int(x['ano']))[2:]}", axis=1)
 
         fig = go.Figure()
-        fig.add_trace(go.Bar(x=df_g['label'], y=df_g['realizado_mes'], name="Realizado", marker_color='#2E7D32'))
-        fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao_mes'], name="Previsão", 
-                                 line=dict(color='#FF9800', width=3, dash='dot')))
+        # Barras de Realizado
+        fig.add_trace(go.Bar(
+            x=df_g['label'], 
+            y=df_g['realizado_mes'], 
+            name="Realizado", 
+            marker_color='#2E7D32'
+        ))
+        # Linha de Previsão
+        fig.add_trace(go.Scatter(
+            x=df_g['label'], 
+            y=df_g['previsao_mes'], 
+            name="Previsão", 
+            line=dict(color='#FF9800', width=3, dash='dot'),
+            mode='lines+markers'
+        ))
+
+        fig.update_layout(
+            hovermode="x unified", 
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(l=0, r=0, t=30, b=0)
+        )
         st.plotly_chart(fig, use_container_width=True)
         
-    # Botão de Backup na Sidebar
+        with st.expander("📄 Detalhamento dos Dados Selecionados"):
+            st.dataframe(df_f, use_container_width=True)
+            
+    # Download de Backup
     csv = df_raw.to_csv(index=False).encode('utf-8')
-    st.sidebar.download_button("📥 Baixar Backup CSV", csv, "backup.csv", "text/csv")
+    st.sidebar.download_button("📥 Baixar Backup CSV", csv, "gestao_backup.csv", "text/csv")
 else:
-    st.info("Importe um arquivo FIPLAN para começar.")
+    st.info("O banco de dados está vazio. Importe um arquivo na barra lateral.")
