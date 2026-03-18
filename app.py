@@ -31,15 +31,12 @@ def limpar_valor(valor, eh_dedutora=False):
 def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
     pdf = FPDF()
     pdf.add_page()
-    
-    # Cabeçalho - Usando novos padrões para evitar avisos no log
     pdf.set_font("helvetica", "B", 18)
     pdf.cell(190, 10, "Relatorio de Gestao Orcamentaria", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.set_font("helvetica", "", 10)
     pdf.cell(190, 10, "Valores Consolidados (Contas Analiticas)", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.ln(5)
     
-    # Gráfico no PDF
     try:
         img_bytes = fig_plotly.to_image(format="png", width=1000, height=500, engine="kaleido")
         pdf.image(io.BytesIO(img_bytes), x=10, y=40, w=190)
@@ -47,14 +44,13 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
     except:
         pdf.ln(5)
 
-    # Tabela PDF
     pdf.set_font("helvetica", "B", 9)
     pdf.set_fill_color(46, 125, 50) 
     pdf.set_text_color(255, 255, 255)
     pdf.cell(35, 8, "Cod. Natureza", 1, 0, "C", True)
     pdf.cell(85, 8, "Descricao", 1, 0, "C", True)
-    pdf.cell(35, 8, "Realizado (R$)", 1, 0, "C", True)
-    pdf.cell(35, 8, "Orcado (R$)", 1, 1, "C", True)
+    pdf.cell(35, 8, "Realizado", 1, 0, "C", True)
+    pdf.cell(35, 8, "Orcado", 1, 1, "C", True)
     
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("helvetica", "", 7)
@@ -64,9 +60,8 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
     
     fill = False
     for _, row in df_filtrado.iterrows():
-        # Limpeza definitiva de Nones e vazios no PDF
-        cod = str(row['codigo_full']).replace('None', '') if row['codigo_full'] else ""
-        nat = str(row['natureza']).replace('None', '') if row['natureza'] else ""
+        cod = str(row['codigo_full']).strip()
+        nat = str(row['natureza']).strip()
         
         pdf.set_fill_color(245, 245, 245) if fill else pdf.set_fill_color(255, 255, 255)
         pdf.cell(35, 7, cod[:15], 1, 0, 'L', fill)
@@ -75,7 +70,6 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
         pdf.cell(35, 7, f"{row['orcado_anual']:,.2f}", 1, 1, 'R', fill)
         fill = not fill
         
-    # Rodapé Totais PDF
     pdf.set_font("helvetica", "B", 8)
     pdf.set_fill_color(200, 200, 200)
     pdf.cell(120, 8, "TOTAIS (SOMENTE ANALITICAS)", 1, 0, 'R', True)
@@ -103,6 +97,7 @@ with st.sidebar:
             dados = []
             for _, row in df_import.iterrows():
                 cod = str(row.iloc[0]).strip()
+                # Filtro analítico rigoroso
                 if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) > 10:
                     is_ded = cod.startswith('9')
                     dados.append((int(mes_ref), int(ano_ref), cod, row.iloc[1], 
@@ -117,19 +112,21 @@ with st.sidebar:
         conn.close()
         st.rerun()
 
-# --- CARGA E LIMPEZA TOTAL ---
+# --- CARGA E LIMPEZA RADICAL DE "NONE" ---
 conn = sqlite3.connect(DB_NAME)
-df_raw = pd.read_sql("SELECT * FROM receitas", conn)
+# Aqui a mágica: filtramos direto no SQL para não trazer lixo
+df_raw = pd.read_sql("SELECT * FROM receitas WHERE codigo_full IS NOT NULL AND natureza != ''", conn)
 conn.close()
 
-# Forçando a limpeza de qualquer tipo de Nulo ou "None" textual
-df_raw = df_raw.fillna("")
-df_raw = df_raw.replace("None", "")
+# Remove qualquer linha que tenha "None" escrito como texto ou natureza vazia
+df_raw = df_raw[df_raw['natureza'].str.contains("None") == False]
+df_raw = df_raw[df_raw['natureza'].str.strip() != ""]
 
 # --- DASHBOARD ---
 if not df_raw.empty:
     st.title("📊 Painel Orçamentário Profissional")
     
+    # Filtros
     c1, c2, c3 = st.columns([1, 1, 2])
     anos_disp = sorted(df_raw['ano'].unique(), reverse=True)
     with c1: anos_sel = st.multiselect("Anos:", anos_disp, default=anos_disp)
@@ -137,7 +134,8 @@ if not df_raw.empty:
         meses_disp = sorted(df_raw['mes'].unique())
         meses_sel = st.multiselect("Meses:", meses_disp, default=meses_disp, format_func=lambda x: MESES_NOMES[x-1])
     with c3:
-        naturezas = sorted(df_raw['natureza'].unique())
+        # Filtro de naturezas limpo (sem etiquetas vazias)
+        naturezas = sorted([n for n in df_raw['natureza'].unique() if n and n != "None"])
         nat_sel = st.multiselect("Filtrar Naturezas:", naturezas)
     
     df_f = df_raw[df_raw['ano'].isin(anos_sel) & df_raw['mes'].isin(meses_sel)].copy()
@@ -171,10 +169,9 @@ if not df_raw.empty:
             pdf_bytes = gerar_pdf_com_grafico(df_f, fig)
             st.download_button(label="📄 Baixar Relatório PDF Limpo", data=pdf_bytes, file_name="relatorio_gestao.pdf", mime="application/pdf")
         except:
-            st.warning("🔄 Processando gráfico para o PDF...")
+            st.warning("🔄 Processando gráfico...")
 
         with st.expander("📋 Tabela de Naturezas (Analítica)"):
-            # Exibe a tabela final formatada e sem "None"
             st.dataframe(df_f[['codigo_full', 'natureza', 'realizado_mes', 'orcado_anual']], width="stretch")
 else:
     st.info("Aguardando importação de dados.")
