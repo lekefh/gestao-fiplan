@@ -52,26 +52,24 @@ def gerar_pdf(df_filtrado, fig_plotly):
     pdf.cell(35, 8, "Orcado", 1, 1, "C", True)
     
     pdf.set_font("helvetica", "", 7)
-    total_r = 0
-    total_o = 0
+    
+    # LÓGICA DE TOTAIS CORRIGIDA (Igual ao Dashboard)
+    total_realizado = df_filtrado['realizado_mes'].sum()
+    # Soma o orçamento único por conta/ano para evitar duplicidade de sintéticas/mensais
+    total_orcado = df_filtrado.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
     
     for _, row in df_filtrado.iterrows():
-        r = float(row['realizado_mes'])
-        o = float(row['orcado_anual'])
-        total_r += r
-        total_o += o
-        
         pdf.cell(40, 7, str(row['codigo_full']), 1)
         pdf.cell(80, 7, str(row['natureza'])[:50], 1)
-        pdf.cell(35, 7, f"{r:,.2f}", 1, 0, "R")
-        pdf.cell(35, 7, f"{o:,.2f}", 1, 1, "R")
+        pdf.cell(35, 7, f"{row['realizado_mes']:,.2f}", 1, 0, "R")
+        pdf.cell(35, 7, f"{row['orcado_anual']:,.2f}", 1, 1, "R")
         
-    # --- LINHA DE TOTAIS NO PDF ---
+    # --- LINHA DE TOTAIS NO PDF (Cravada com o Dashboard) ---
     pdf.set_font("helvetica", "B", 9)
     pdf.set_fill_color(200, 200, 200)
-    pdf.cell(120, 9, "TOTAIS CONSOLIDADOS", 1, 0, "R", True)
-    pdf.cell(35, 9, f"{total_r:,.2f}", 1, 0, "R", True)
-    pdf.cell(35, 9, f"{total_o:,.2f}", 1, 1, "R", True)
+    pdf.cell(120, 9, "TOTAIS CONSOLIDADOS (ANALITICOS)", 1, 0, "R", True)
+    pdf.cell(35, 9, f"{total_realizado:,.2f}", 1, 0, "R", True)
+    pdf.cell(35, 9, f"{total_orcado:,.2f}", 1, 1, "R", True)
     
     return bytes(pdf.output())
 
@@ -96,7 +94,7 @@ with st.sidebar:
             for _, row in df_import.iterrows():
                 cod = str(row.iloc[0]).strip()
                 nat = str(row.iloc[1]).strip()
-                # REGRA DE OURO ORIGINAL (Mantém os 953M)
+                # REGRA DE OURO ORIGINAL (Analítica pura)
                 if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) > 10 and nat != "None":
                     is_ded = cod.startswith('9')
                     dados.append((int(mes_ref), int(ano_ref), cod, nat, 
@@ -121,7 +119,7 @@ df_raw = pd.read_sql("SELECT * FROM receitas WHERE natureza != 'None' AND nature
 conn.close()
 
 if not df_raw.empty:
-    st.title("📊 Painel Orçamentário")
+    st.title("📊 Painel Orçamentário Profissional")
     
     c1, c2, c3 = st.columns([1, 1, 2])
     anos_sel = c1.multiselect("Anos:", sorted(df_raw['ano'].unique()), default=df_raw['ano'].unique())
@@ -149,7 +147,7 @@ if not df_raw.empty:
         fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao_mes'], name="Previsão", line=dict(color='#FF9800', width=3, dash='dot')))
         st.plotly_chart(fig, use_container_width=True)
         
-        st.download_button("📄 Baixar Relatório PDF", data=gerar_pdf(df_f, fig), file_name="relatorio_final.pdf")
+        st.download_button("📄 Baixar Relatório PDF", data=gerar_pdf(df_f, fig), file_name="relatorio_gestao.pdf")
     
     st.sidebar.divider()
     st.sidebar.download_button("📥 Backup CSV", df_raw.to_csv(index=False).encode('utf-8'), "backup.csv")
