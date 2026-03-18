@@ -33,72 +33,70 @@ def gerar_pdf_com_grafico(df_filtrado, fig_plotly):
     pdf.add_page()
     pdf.set_font("helvetica", "B", 18)
     pdf.cell(190, 10, "Relatorio de Gestao Orcamentaria", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
-    pdf.set_font("helvetica", "", 10)
-    pdf.cell(190, 10, "Valores Consolidados (Contas Analiticas)", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.ln(5)
-    
     try:
         img_bytes = fig_plotly.to_image(format="png", width=1000, height=500, engine="kaleido")
-        pdf.image(io.BytesIO(img_bytes), x=10, y=40, w=190)
+        pdf.image(io.BytesIO(img_bytes), x=10, y=35, w=180)
         pdf.ln(95) 
-    except:
-        pdf.ln(5)
+    except: pdf.ln(5)
 
     pdf.set_font("helvetica", "B", 9)
-    pdf.set_fill_color(46, 125, 50) 
-    pdf.set_text_color(255, 255, 255)
+    pdf.set_fill_color(46, 125, 50); pdf.set_text_color(255, 255, 255)
     pdf.cell(35, 8, "Cod. Natureza", 1, 0, "C", True)
     pdf.cell(85, 8, "Descricao", 1, 0, "C", True)
     pdf.cell(35, 8, "Realizado", 1, 0, "C", True)
     pdf.cell(35, 8, "Orcado", 1, 1, "C", True)
     
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font("helvetica", "", 7)
-    
+    pdf.set_text_color(0, 0, 0); pdf.set_font("helvetica", "", 7)
     t_real = df_filtrado['realizado_mes'].sum()
     t_orc = df_filtrado.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
     
     fill = False
     for _, row in df_filtrado.iterrows():
-        cod = str(row['codigo_full']).strip()
-        nat = str(row['natureza']).strip()
         pdf.set_fill_color(245, 245, 245) if fill else pdf.set_fill_color(255, 255, 255)
-        pdf.cell(35, 7, cod[:15], 1, 0, 'L', fill)
-        pdf.cell(85, 7, nat[:55], 1, 0, 'L', fill)
+        pdf.cell(35, 7, str(row['codigo_full'])[:15], 1, 0, 'L', fill)
+        pdf.cell(85, 7, str(row['natureza'])[:55], 1, 0, 'L', fill)
         pdf.cell(35, 7, f"{row['realizado_mes']:,.2f}", 1, 0, 'R', fill)
         pdf.cell(35, 7, f"{row['orcado_anual']:,.2f}", 1, 1, 'R', fill)
         fill = not fill
         
-    pdf.set_font("helvetica", "B", 8)
-    pdf.set_fill_color(200, 200, 200)
-    pdf.cell(120, 8, "TOTAIS (SOMENTE ANALITICAS)", 1, 0, 'R', True)
+    pdf.set_font("helvetica", "B", 8); pdf.set_fill_color(200, 200, 200)
+    pdf.cell(120, 8, "TOTAIS CONSOLIDADOS", 1, 0, 'R', True)
     pdf.cell(35, 8, f"{t_real:,.2f}", 1, 0, 'R', True)
     pdf.cell(35, 8, f"{t_orc:,.2f}", 1, 1, 'R', True)
-    
     return bytes(pdf.output())
 
 inicializar_banco()
 
-# --- SIDEBAR: GESTÃO E LIMPEZA ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("📥 Gestão de Dados")
     arquivo = st.file_uploader("Subir FIPLAN (.xlsx) ou Backup (.csv)", type=["xlsx", "csv"])
     
+    # SELETOR SEMPRE VISÍVEL PARA EXCEL
+    mes_ref, ano_ref = 1, 2026
+    if arquivo and arquivo.name.endswith('.xlsx'):
+        mes_ref = st.selectbox("Selecione o Mês", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
+        ano_ref = st.number_input("Selecione o Ano", value=2026)
+    
     if arquivo and st.button("🚀 Processar Arquivo"):
         conn = sqlite3.connect(DB_NAME)
         if arquivo.name.endswith('.csv'):
-            pd.read_csv(arquivo).to_sql('receitas', conn, if_exists='replace', index=False)
-            st.success("✅ Backup restaurado!")
+            df_bkp = pd.read_csv(arquivo)
+            # Limpa lixo do backup antes de restaurar
+            df_bkp = df_bkp.dropna(subset=['natureza'])
+            df_bkp = df_bkp[df_bkp['natureza'].str.contains("None") == False]
+            df_bkp.to_sql('receitas', conn, if_exists='replace', index=False)
+            st.success("✅ Backup Limpo Restaurado!")
         else:
-            mes_ref = st.selectbox("Mês", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
-            ano_ref = st.number_input("Ano", value=2026)
             df_import = pd.read_excel(arquivo, skiprows=7)
             dados = []
             for _, row in df_import.iterrows():
                 cod = str(row.iloc[0]).strip()
-                if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) > 10:
+                nat = str(row.iloc[1]).strip()
+                if re.match(r'^\d', cod) and not cod.endswith('.0') and len(cod) > 10 and nat != "None":
                     is_ded = cod.startswith('9')
-                    dados.append((int(mes_ref), int(ano_ref), cod, row.iloc[1], 
+                    dados.append((int(mes_ref), int(ano_ref), cod, nat, 
                                  limpar_valor(row.iloc[3], is_ded), limpar_valor(row.iloc[5], is_ded),
                                  limpar_valor(row.iloc[6], is_ded), limpar_valor(row.iloc[9], is_ded),
                                  limpar_valor(row.iloc[10], is_ded)))
@@ -106,31 +104,22 @@ with st.sidebar:
                 conn.execute("DELETE FROM receitas WHERE mes = ? AND ano = ?", (int(mes_ref), int(ano_ref)))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?,?)", dados)
                 conn.commit()
-                st.success("✅ Dados processados!")
+                st.success(f"✅ {len(dados)} linhas de {MESES_NOMES[mes_ref-1]} salvas!")
         conn.close()
         st.rerun()
 
-    # BOTÃO PARA LIMPAR O BANCO (RESET)
-    st.sidebar.divider()
-    if st.sidebar.button("🔴 Limpar Tudo e Recomeçar"):
-        conn = sqlite3.connect(DB_NAME)
-        conn.execute("DELETE FROM receitas")
-        conn.commit()
-        conn.close()
-        st.success("Banco de dados resetado!")
+    if st.sidebar.button("🔴 Limpar Tudo"):
+        conn = sqlite3.connect(DB_NAME); conn.execute("DELETE FROM receitas"); conn.commit(); conn.close()
+        st.cache_data.clear()
         st.rerun()
 
-# --- CARGA E FILTRO RADICAL ---
+# --- CARGA E FILTRO ---
 conn = sqlite3.connect(DB_NAME)
-# Filtro SQL para ignorar lixo
-df_raw = pd.read_sql("SELECT * FROM receitas WHERE codigo_full IS NOT NULL AND natureza != '' AND natureza != 'None'", conn)
+df_raw = pd.read_sql("SELECT * FROM receitas WHERE natureza NOT LIKE '%None%' AND natureza != ''", conn)
 conn.close()
 
-# --- DASHBOARD ---
 if not df_raw.empty:
-    st.title("📊 Painel Orçamentário Profissional")
-    
-    # Filtros
+    st.title("📊 Gestão Orçamentária")
     c1, c2, c3 = st.columns([1, 1, 2])
     anos_disp = sorted(df_raw['ano'].unique(), reverse=True)
     with c1: anos_sel = st.multiselect("Anos:", anos_disp, default=anos_disp)
@@ -138,48 +127,31 @@ if not df_raw.empty:
         meses_disp = sorted(df_raw['mes'].unique())
         meses_sel = st.multiselect("Meses:", meses_disp, default=meses_disp, format_func=lambda x: MESES_NOMES[x-1])
     with c3:
-        # Pega naturezas que não sejam vazias ou "None"
-        naturezas = sorted([n for n in df_raw['natureza'].unique() if n and str(n).strip() != "" and str(n) != "None"])
-        nat_sel = st.multiselect("Filtrar Naturezas:", naturezas)
+        naturezas = sorted([n for n in df_raw['natureza'].unique() if n and n != "None"])
+        nat_sel = st.multiselect("Naturezas:", naturezas)
     
     df_f = df_raw[df_raw['ano'].isin(anos_sel) & df_raw['mes'].isin(meses_sel)].copy()
     if nat_sel: df_f = df_f[df_f['natureza'].isin(nat_sel)]
 
     if not df_f.empty:
         df_f = df_f.sort_values(['ano', 'mes'])
-        
-        # KPIs
-        st.divider()
         k1, k2, k3 = st.columns(3)
-        val_orc = df_f.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
-        val_real = df_f['realizado_mes'].sum()
-        k1.metric("Orçado (Período)", f"R$ {val_orc:,.2f}")
-        k2.metric("Realizado (Período)", f"R$ {val_real:,.2f}")
-        k3.metric("Atingimento", f"{(val_real/val_orc*100 if val_orc != 0 else 0):.1f}%")
+        v_orc = df_f.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
+        v_real = df_f['realizado_mes'].sum()
+        k1.metric("Orçado", f"R$ {v_orc:,.2f}")
+        k2.metric("Realizado", f"R$ {v_real:,.2f}")
+        k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
 
-        # Gráfico
         df_g = df_f.groupby(['ano', 'mes'])[['realizado_mes', 'previsao_mes']].sum().reset_index()
         df_g['label'] = df_g.apply(lambda x: f"{MESES_NOMES[int(x['mes'])-1]}/{str(int(x['ano']))[2:]}", axis=1)
         fig = go.Figure()
         fig.add_trace(go.Bar(x=df_g['label'], y=df_g['realizado_mes'], name="Realizado", marker_color='#2E7D32'))
         fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao_mes'], name="Previsão", line=dict(color='#FF9800', width=3, dash='dot')))
-        fig.update_layout(height=400, hovermode="x unified", legend=dict(orientation="h", y=1.1))
         st.plotly_chart(fig, width="stretch")
 
-        # Botão PDF
-        st.divider()
-        try:
-            pdf_bytes = gerar_pdf_com_grafico(df_f, fig)
-            st.download_button(label="📄 Baixar Relatório PDF", data=pdf_bytes, file_name="relatorio_gestao.pdf", mime="application/pdf")
-        except:
-            st.warning("🔄 Processando gráfico...")
-
-    # BOTÃO DE BACKUP (Voltou para a barra lateral)
+        st.download_button("📄 Baixar PDF", data=gerar_pdf_com_grafico(df_f, fig), file_name="relatorio.pdf")
+    
     st.sidebar.divider()
-    csv_data = df_raw.to_csv(index=False).encode('utf-8')
-    st.sidebar.download_button("📥 Baixar Backup CSV", csv_data, "gestao_backup.csv", "text/csv")
-
-    with st.expander("📋 Ver Tabela de Dados"):
-        st.dataframe(df_f[['codigo_full', 'natureza', 'realizado_mes', 'orcado_anual']], width="stretch")
+    st.sidebar.download_button("📥 Baixar Backup", df_raw.to_csv(index=False).encode('utf-8'), "backup.csv")
 else:
-    st.info("Nenhum dado encontrado. Use a barra lateral para importar ou resetar.")
+    st.info("Importe dados para começar.")
