@@ -8,148 +8,149 @@ from fpdf.enums import XPos, YPos
 import io
 
 # --- CONFIGURAÇÕES ---
-DB_NAME = 'dados_gestao.db'
-st.set_page_config(page_title="Gestão Orçamentária", layout="wide")
+DB_NAME = 'dados_gestao_total.db'
+st.set_page_config(page_title="Gestão Integrada FIPLAN", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
 def inicializar_banco():
     conn = sqlite3.connect(DB_NAME)
+    # Tabela de Receitas
     conn.execute('''CREATE TABLE IF NOT EXISTS receitas 
         (mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT, 
-        orcado_anual REAL, previsao_mes REAL, realizado_mes REAL, 
-        previsao_acumulada REAL, realizado_acumulado REAL)''')
+        orcado REAL, realizado REAL)''')
+    # Tabela de Despesas (Baseada no FIP 613)
+    conn.execute('''CREATE TABLE IF NOT EXISTS despesas 
+        (mes INTEGER, ano INTEGER, uo TEXT, funcao TEXT, subfuncao TEXT, 
+        programa TEXT, projeto TEXT, natureza TEXT, fonte TEXT,
+        dotacao REAL, empenhado REAL, liquidado REAL, pago REAL, saldo REAL)''')
     conn.close()
 
-def limpar_valor(valor, eh_dedutora=False):
-    if pd.isna(valor) or valor == "" or valor == "-": return 0.0
-    if isinstance(valor, str): valor = valor.replace('.', '').replace(',', '.')
-    try:
-        num = float(valor)
-        return num * -1 if eh_dedutora else num
+def limpar_f(v):
+    if pd.isna(v) or v == "" or v == "-": return 0.0
+    if isinstance(v, str): v = v.replace('.', '').replace(',', '.')
+    try: return float(v)
     except: return 0.0
-
-def gerar_pdf(df_filtrado, fig_plotly):
-    pdf = FPDF()
-    pdf.add_page()
-    
-    # Título
-    pdf.set_font("helvetica", "B", 16)
-    pdf.cell(190, 10, "Relatorio de Gestao Orcamentaria", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
-    
-    # Gráfico
-    try:
-        img_bytes = fig_plotly.to_image(format="png", width=800, height=400, engine="kaleido")
-        pdf.image(io.BytesIO(img_bytes), x=15, y=30, w=180)
-        pdf.ln(85)
-    except: pdf.ln(10)
-    
-    # Tabela - Cabeçalho
-    pdf.set_font("helvetica", "B", 10)
-    pdf.set_fill_color(230, 230, 230)
-    pdf.cell(40, 8, "Cod. Natureza", 1, 0, "C", True)
-    pdf.cell(80, 8, "Natureza", 1, 0, "C", True)
-    pdf.cell(35, 8, "Realizado", 1, 0, "C", True)
-    pdf.cell(35, 8, "Orcado", 1, 1, "C", True)
-    
-    pdf.set_font("helvetica", "", 7)
-    
-    # LÓGICA DE TOTAIS CORRIGIDA (Igual ao Dashboard)
-    total_realizado = df_filtrado['realizado_mes'].sum()
-    # Soma o orçamento único por conta/ano para evitar duplicidade de sintéticas/mensais
-    total_orcado = df_filtrado.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
-    
-    for _, row in df_filtrado.iterrows():
-        pdf.cell(40, 7, str(row['codigo_full']), 1)
-        pdf.cell(80, 7, str(row['natureza'])[:50], 1)
-        pdf.cell(35, 7, f"{row['realizado_mes']:,.2f}", 1, 0, "R")
-        pdf.cell(35, 7, f"{row['orcado_anual']:,.2f}", 1, 1, "R")
-        
-    # --- LINHA DE TOTAIS NO PDF (Cravada com o Dashboard) ---
-    pdf.set_font("helvetica", "B", 9)
-    pdf.set_fill_color(200, 200, 200)
-    pdf.cell(120, 9, "TOTAIS CONSOLIDADOS (ANALITICOS)", 1, 0, "R", True)
-    pdf.cell(35, 9, f"{total_realizado:,.2f}", 1, 0, "R", True)
-    pdf.cell(35, 9, f"{total_orcado:,.2f}", 1, 1, "R", True)
-    
-    return bytes(pdf.output())
 
 inicializar_banco()
 
-# --- SIDEBAR ---
+# --- SIDEBAR: IMPORTAÇÃO ---
 with st.sidebar:
-    st.header("📥 Gestão de Dados")
-    arquivo = st.file_uploader("Upload FIPLAN (.xlsx)", type=["xlsx", "csv"])
+    st.header("📥 Importar Dados")
+    tipo_dado = st.radio("O que você vai subir?", ["Receita", "Despesa"])
+    arquivo = st.file_uploader(f"Arquivo {tipo_dado} (FIPLAN)", type=["xlsx"])
     
-    mes_ref = st.selectbox("Mês de Referência", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
-    ano_ref = st.number_input("Ano de Referência", value=2026)
+    mes_ref = st.selectbox("Mês", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
+    ano_ref = st.number_input("Ano", value=2026)
     
-    if arquivo and st.button("🚀 Processar Dados"):
+    if arquivo and st.button("🚀 Processar e Salvar"):
         conn = sqlite3.connect(DB_NAME)
-        if arquivo.name.endswith('.csv'):
-            pd.read_csv(arquivo).to_sql('receitas', conn, if_exists='replace', index=False)
-            st.success("Backup Restaurado")
-        else:
-            df_import = pd.read_excel(arquivo, skiprows=7)
+        if tipo_dado == "Receita":
+            df = pd.read_excel(arquivo, skiprows=7)
             dados = []
-            for _, row in df_import.iterrows():
+            for _, row in df.iterrows():
                 cod = str(row.iloc[0]).strip()
-                nat = str(row.iloc[1]).strip()
-                # REGRA DE OURO ORIGINAL (Analítica pura)
-                if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) > 10 and nat != "None":
-                    is_ded = cod.startswith('9')
-                    dados.append((int(mes_ref), int(ano_ref), cod, nat, 
-                                 limpar_valor(row.iloc[3], is_ded), limpar_valor(row.iloc[5], is_ded),
-                                 limpar_valor(row.iloc[6], is_ded), limpar_valor(row.iloc[9], is_ded),
-                                 limpar_valor(row.iloc[10], is_ded)))
-            if dados:
-                conn.execute("DELETE FROM receitas WHERE mes = ? AND ano = ?", (int(mes_ref), int(ano_ref)))
-                conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?,?)", dados)
-                conn.commit()
-                st.success("Dados Salvos com Sucesso!")
+                if re.match(r'^\d', cod) and not cod.endswith('.0') and len(cod) > 10:
+                    dados.append((mes_ref, ano_ref, cod, str(row.iloc[1]), limpar_f(row.iloc[3]), limpar_f(row.iloc[6])))
+            conn.execute("DELETE FROM receitas WHERE mes=? AND ano=?", (mes_ref, ano_ref))
+            conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?)", dados)
+        else:
+            # Processamento de Despesa (FIP 613)
+            df = pd.read_excel(arquivo, skiprows=10) # FIP 613 costuma ter mais cabeçalho
+            dados = []
+            for _, row in df.iterrows():
+                uo = str(row.iloc[0]).strip()
+                if uo.isdigit(): # Garante que é uma linha de dados (UO numérica)
+                    dados.append((mes_ref, ano_ref, uo, str(row.iloc[2]), str(row.iloc[3]), 
+                                 str(row.iloc[4]), str(row.iloc[5]), str(row.iloc[7]), str(row.iloc[8]),
+                                 limpar_f(row.iloc[11]), limpar_f(row.iloc[21]), limpar_f(row.iloc[22]), 
+                                 limpar_f(row.iloc[24]), limpar_f(row.iloc[20])))
+            conn.execute("DELETE FROM despesas WHERE mes=? AND ano=?", (mes_ref, ano_ref))
+            conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
+        
+        conn.commit()
         conn.close()
+        st.success("Dados processados!")
         st.rerun()
 
-    if st.button("🔴 LIMPAR TUDO"):
-        conn = sqlite3.connect(DB_NAME); conn.execute("DELETE FROM receitas"); conn.commit(); conn.close()
-        st.rerun()
+    if st.button("🔴 Limpar Tudo"):
+        conn = sqlite3.connect(DB_NAME); conn.execute("DELETE FROM receitas"); conn.execute("DELETE FROM despesas")
+        conn.commit(); conn.close(); st.rerun()
 
-# --- DASHBOARD ---
+# --- CARGA DE DADOS ---
 conn = sqlite3.connect(DB_NAME)
-df_raw = pd.read_sql("SELECT * FROM receitas WHERE natureza != 'None' AND natureza != ''", conn)
+df_rec = pd.read_sql("SELECT * FROM receitas", conn)
+df_desp = pd.read_sql("SELECT * FROM despesas", conn)
 conn.close()
 
-if not df_raw.empty:
-    st.title("📊 Painel Orçamentário")
-    
-    c1, c2, c3 = st.columns([1, 1, 2])
-    anos_sel = c1.multiselect("Anos:", sorted(df_raw['ano'].unique()), default=df_raw['ano'].unique())
-    meses_sel = c2.multiselect("Meses:", sorted(df_raw['mes'].unique()), default=df_raw['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
-    naturezas = sorted(df_raw['natureza'].unique())
-    nat_sel = c3.multiselect("Naturezas:", naturezas)
-    
-    df_f = df_raw[df_raw['ano'].isin(anos_sel) & df_raw['mes'].isin(meses_sel)].copy()
-    if nat_sel: df_f = df_f[df_f['natureza'].isin(nat_sel)]
+# --- INTERFACE POR ABAS ---
+tab1, tab2, tab3 = st.tabs(["📊 Receitas", "💸 Despesas", "⚖️ Análise Receita x Despesa"])
 
-    if not df_f.empty:
-        # KPIs
-        k1, k2, k3 = st.columns(3)
-        v_orc = df_f.groupby(['ano', 'codigo_full'])['orcado_anual'].last().sum()
-        v_real = df_f['realizado_mes'].sum()
-        k1.metric("Orçado Total", f"R$ {v_orc:,.2f}")
-        k2.metric("Realizado Total", f"R$ {v_real:,.2f}")
-        k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
-
-        # Gráfico
-        df_g = df_f.groupby(['ano', 'mes'])[['realizado_mes', 'previsao_mes']].sum().reset_index()
-        df_g['label'] = df_g.apply(lambda x: f"{MESES_NOMES[int(x['mes'])-1]}/{str(int(x['ano']))[2:]}", axis=1)
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=df_g['label'], y=df_g['realizado_mes'], name="Realizado", marker_color='#2E7D32'))
-        fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao_mes'], name="Previsão", line=dict(color='#FF9800', width=3, dash='dot')))
-        st.plotly_chart(fig, use_container_width=True)
+# --- ABA 1: RECEITAS ---
+with tab1:
+    if not df_rec.empty:
+        st.subheader("Painel de Receitas")
+        # Filtros e Gráficos de Receita (mesma lógica que já tínhamos)
+        c1, c2 = st.columns(2)
+        v_orc = df_rec['orcado'].sum()
+        v_real = df_rec['realizado'].sum()
+        c1.metric("Orçado", f"R$ {v_orc:,.2f}")
+        c2.metric("Realizado", f"R$ {v_real:,.2f}")
         
-        st.download_button("📄 Baixar Relatório PDF", data=gerar_pdf(df_f, fig), file_name="relatorio_gestao.pdf")
-    
-    st.sidebar.divider()
-    st.sidebar.download_button("📥 Backup CSV", df_raw.to_csv(index=False).encode('utf-8'), "backup.csv")
-else:
-    st.info("Aguardando importação de dados.")
+        fig_r = go.Figure(data=[go.Bar(x=df_rec['natureza'][:10], y=df_rec['realizado'][:10], marker_color='#2E7D32')])
+        st.plotly_chart(fig_r, use_container_width=True)
+    else:
+        st.info("Aguardando dados de Receita.")
+
+# --- ABA 2: DESPESAS ---
+with tab2:
+    if not df_desp.empty:
+        st.subheader("Painel de Despesas (FIP 613)")
+        
+        # Filtros Dinâmicos de Despesa
+        f1, f2, f3 = st.columns(3)
+        funcao_sel = f1.multiselect("Função:", sorted(df_desp['funcao'].unique()))
+        prog_sel = f2.multiselect("Programa:", sorted(df_desp['programa'].unique()))
+        nat_sel = f3.multiselect("Natureza Despesa:", sorted(df_desp['natureza'].unique()))
+        
+        df_df = df_desp.copy()
+        if funcao_sel: df_df = df_df[df_df['funcao'].isin(funcao_sel)]
+        if prog_sel: df_df = df_df[df_df['programa'].isin(prog_sel)]
+        if nat_sel: df_df = df_df[df_df['natureza'].isin(nat_sel)]
+        
+        # KPIs de Despesa
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Dotação Inicial", f"R$ {df_df['dotacao'].sum():,.2f}")
+        k2.metric("Empenhado", f"R$ {df_df['empenhado'].sum():,.2f}")
+        k3.metric("Liquidado", f"R$ {df_df['liquidado'].sum():,.2f}")
+        k4.metric("Saldo Dotação", f"R$ {df_df['saldo'].sum():,.2f}")
+        
+        # Gráfico Despesa por Função
+        df_graf = df_df.groupby('funcao')['liquidado'].sum().reset_index()
+        fig_d = go.Figure(data=[go.Pie(labels=df_graf['funcao'], values=df_graf['liquidado'], hole=.3)])
+        st.plotly_chart(fig_d, use_container_width=True)
+        
+        st.dataframe(df_df, use_container_width=True)
+    else:
+        st.info("Aguardando dados de Despesa.")
+
+# --- ABA 3: CRUZAMENTO ---
+with tab3:
+    st.subheader("Equilíbrio Orçamentário")
+    if not df_rec.empty and not df_desp.empty:
+        tot_rec = df_rec['realizado'].sum()
+        tot_desp = df_desp['liquidado'].sum()
+        saldo = tot_rec - tot_desp
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Recebido", f"R$ {tot_rec:,.2f}")
+        m2.metric("Total Liquidado", f"R$ {tot_desp:,.2f}")
+        m3.metric("Saldo (Superávit/Déficit)", f"R$ {saldo:,.2f}", delta=f"{saldo:,.2f}")
+        
+        # Gráfico Comparativo
+        fig_comp = go.Figure(data=[
+            go.Bar(name='Receita (Realizada)', x=['Total'], y=[tot_rec], marker_color='green'),
+            go.Bar(name='Despesa (Liquidada)', x=['Total'], y=[tot_desp], marker_color='red')
+        ])
+        st.plotly_chart(fig_comp, use_container_width=True)
+    else:
+        st.warning("É necessário carregar dados nas duas abas para ver o cruzamento.")
