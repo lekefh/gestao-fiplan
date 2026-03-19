@@ -10,16 +10,18 @@ DB_NAME = 'dados_gestao_integrada.db'
 st.set_page_config(page_title="Gestão Integrada FIPLAN", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
-# CSS CORRIGIDO: Diminui a fonte dos KPIs (campos destacados)
+# CSS: Letras menores nos KPIs e ajuste de espaçamento
 st.markdown("""
     <style>
-    [data-testid="stMetricValue"] { font-size: 1.5rem !important; font-weight: 700; }
-    [data-testid="stMetricLabel"] { font-size: 0.8rem !important; color: #555; }
+    [data-testid="stMetricValue"] { font-size: 1.4rem !important; font-weight: 700; }
+    [data-testid="stMetricLabel"] { font-size: 0.8rem !important; }
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
 def inicializar_banco():
     conn = sqlite3.connect(DB_NAME)
+    # Criar tabelas com a estrutura completa
     conn.execute('''CREATE TABLE IF NOT EXISTS receitas 
         (mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT, 
         orcado REAL, realizado REAL, previsao REAL)''')
@@ -64,7 +66,7 @@ with st.sidebar:
                 for _, row in df.iterrows():
                     uo = str(row.iloc[0]).strip()
                     if uo.isdigit():
-                        # Coluna 16 = Crédito Autorizado (Dotação Atualizada)
+                        # Coluna 16 é o Crédito Autorizado (Dotação Atualizada)
                         dados.append((mes_ref, ano_ref, uo, str(row.iloc[2]), str(row.iloc[3]), str(row.iloc[4]), 
                                      str(row.iloc[5]), str(row.iloc[7]), str(row.iloc[8]),
                                      limpar_f(row.iloc[11]), limpar_f(row.iloc[21]), limpar_f(row.iloc[22]), 
@@ -74,18 +76,19 @@ with st.sidebar:
             conn.commit()
             st.success("✅ Importado com sucesso!")
         except Exception as e:
-            st.error(f"Erro: {e}")
+            st.error(f"Erro no processamento: {e}")
         finally:
             conn.close()
             st.rerun()
 
+    # BOTÃO RESET MESTRE
     if st.button("🔴 LIMPAR TUDO"):
         conn = sqlite3.connect(DB_NAME)
         conn.execute("DROP TABLE IF EXISTS receitas")
         conn.execute("DROP TABLE IF EXISTS despesas")
         conn.commit()
         conn.close()
-        inicializar_banco()
+        inicializar_banco() # Recria com as colunas novas
         st.cache_data.clear()
         st.rerun()
 
@@ -105,16 +108,14 @@ with tab1:
         meses_r = c2.multiselect("Meses:", sorted(df_rec_raw['mes'].unique()), default=df_rec_raw['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="mr")
         nat_r = c3.multiselect("Filtrar Naturezas:", sorted(df_rec_raw['natureza'].unique()), key="nr")
         
-        df_periodo = df_rec_raw[(df_rec_raw['ano'].isin(anos_r)) & (df_rec_raw['mes'].isin(meses_r))]
-        total_rec = df_periodo['realizado'].sum()
-        df_rf = df_periodo.copy()
+        df_rf = df_rec_raw[(df_rec_raw['ano'].isin(anos_r)) & (df_rec_raw['mes'].isin(meses_r))]
+        total_rec = df_rf['realizado'].sum()
         if nat_r: df_rf = df_rf[df_rf['natureza'].isin(nat_r)]
         
         if not df_rf.empty:
+            k1, k2, k3 = st.columns(3)
             v_orc = df_rf.groupby(['ano', 'codigo_full'])['orcado'].last().sum()
             v_real = df_rf['realizado'].sum()
-            
-            k1, k2, k3 = st.columns(3)
             k1.metric("Orçado (Seleção)", f"R$ {v_orc:,.2f}")
             k2.metric("Realizado (Seleção)", f"R$ {v_real:,.2f}")
             k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
@@ -147,7 +148,7 @@ with tab2:
         if nat_desp_sel: df_df = df_df[df_df['natureza'].isin(nat_desp_sel)]
 
         if not df_df.empty:
-            # KPIs COM FONTE MENOR (via CSS acima)
+            # KPIs com fontes menores e Dotação Atualizada
             k1, k2, k3, k4, k5 = st.columns(5)
             k1.metric("Dotação Atualizada", f"R$ {df_df['cred_autorizado'].sum():,.2f}")
             k2.metric("Empenhado", f"R$ {df_df['empenhado'].sum():,.2f}")
@@ -156,9 +157,9 @@ with tab2:
             k5.metric("Saldo Dotação", f"R$ {df_df['saldo'].sum():,.2f}")
             
             fig_d = go.Figure()
-            fig_d.add_trace(go.Bar(name='Empenhado', x=['Total Selecionado'], y=[df_df['empenhado'].sum()], marker_color='#A9A9A9'))
-            fig_d.add_trace(go.Bar(name='Liquidado', x=['Total Selecionado'], y=[df_df['liquidado'].sum()], marker_color='#72A0C1'))
-            fig_d.add_trace(go.Bar(name='Pago', x=['Total Selecionado'], y=[df_df['pago'].sum()], marker_color='#2E7D32'))
+            fig_d.add_trace(go.Bar(name='Empenhado', x=['Total Período'], y=[df_df['empenhado'].sum()], marker_color='#A9A9A9'))
+            fig_d.add_trace(go.Bar(name='Liquidado', x=['Total Período'], y=[df_df['liquidado'].sum()], marker_color='#72A0C1'))
+            fig_d.add_trace(go.Bar(name='Pago', x=['Total Período'], y=[df_df['pago'].sum()], marker_color='#2E7D32'))
             fig_d.update_layout(height=300, barmode='group', margin=dict(l=0, r=0, t=20, b=0))
             st.plotly_chart(fig_d, use_container_width=True)
 
@@ -170,17 +171,17 @@ with tab2:
 # --- ABA 3: CONFRONTO ---
 with tab3:
     if not df_rec_raw.empty and not df_desp_raw.empty:
+        st.title("⚖️ Confronto Financeiro e Orçamentário")
         tr = df_rec_raw['realizado'].sum()
         te = df_desp_raw['empenhado'].sum()
         tp = df_desp_raw['pago'].sum()
-        st.title("⚖️ Confronto Financeiro")
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Receita Realizada Total", f"R$ {tr:,.2f}")
-        m2.metric("Despesa Empenhada Total", f"R$ {te:,.2f}")
-        m3.metric("Despesa Paga Total", f"R$ {tp:,.2f}")
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Receita Realizada Total", f"R$ {tr:,.2f}")
+        c2.metric("Despesa Empenhada Total", f"R$ {te:,.2f}")
+        c3.metric("Despesa Paga Total", f"R$ {tp:,.2f}")
         
         st.divider()
-        st.info(f"**Superávit Financeiro (Realizado - Pago): R$ {tr - tp:,.2f}**")
-        st.warning(f"**Superávit Orçamentário (Realizado - Empenhado): R$ {tr - te:,.2f}**")
-else:
-    st.info("Aguardando dados para análise.")
+        m1, m2 = st.columns(2)
+        m1.info(f"**Superávit Financeiro (Realizado - Pago): R$ {tr - tp:,.2f}**")
+        m2.warning(f"**Superávit Orçamentário (Realizado - Empenhado): R$ {tr - te:,.2f}**")
