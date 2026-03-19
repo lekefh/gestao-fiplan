@@ -15,13 +15,11 @@ st.markdown("""
     <style>
     [data-testid="stMetricValue"] { font-size: 1.4rem !important; font-weight: 700; }
     [data-testid="stMetricLabel"] { font-size: 0.8rem !important; }
-    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
 def inicializar_banco():
     conn = sqlite3.connect(DB_NAME)
-    # Criar tabelas com a estrutura completa
     conn.execute('''CREATE TABLE IF NOT EXISTS receitas 
         (mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT, 
         orcado REAL, realizado REAL, previsao REAL)''')
@@ -61,16 +59,28 @@ with st.sidebar:
                 conn.execute("DELETE FROM receitas WHERE mes=? AND ano=?", (mes_ref, ano_ref))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?)", dados)
             else:
+                # IMPORTAÇÃO DE DESPESA BUSCANDO PELO NOME DA COLUNA
                 df = pd.read_excel(arquivo, skiprows=10)
+                # Limpeza básica de colunas fantasmas
+                df.columns = df.columns.str.strip()
+                
                 dados = []
                 for _, row in df.iterrows():
-                    uo = str(row.iloc[0]).strip()
+                    uo = str(row.get('UO', '')).strip()
                     if uo.isdigit():
-                        # Coluna 16 é o Crédito Autorizado (Dotação Atualizada)
-                        dados.append((mes_ref, ano_ref, uo, str(row.iloc[2]), str(row.iloc[3]), str(row.iloc[4]), 
-                                     str(row.iloc[5]), str(row.iloc[7]), str(row.iloc[8]),
-                                     limpar_f(row.iloc[11]), limpar_f(row.iloc[21]), limpar_f(row.iloc[22]), 
-                                     limpar_f(row.iloc[24]), limpar_f(row.iloc[20]), limpar_f(row.iloc[16])))
+                        # Captura dinâmica baseada nos nomes exatos do seu Excel
+                        dados.append((
+                            mes_ref, ano_ref, uo, 
+                            str(row.get('Função', '')), str(row.get('Subfunção', '')), 
+                            str(row.get('Programa', '')), str(row.get('Projeto/Atividade', '')), 
+                            str(row.get('Natureza de Despesa', '')), str(row.get('Fonte de Recurso', '')),
+                            limpar_f(row.get('Dotação Inicial', 0)), 
+                            limpar_f(row.get('Empenhado', 0)), 
+                            limpar_f(row.get('Liquidado', 0)), 
+                            limpar_f(row.get('Valor Pago', 0)), 
+                            limpar_f(row.get('Saldo Dotação', 0)),
+                            limpar_f(row.get('Créd. Autorizado', 0)) # <--- BUSCA PELO NOME EXATO
+                        ))
                 conn.execute("DELETE FROM despesas WHERE mes=? AND ano=?", (mes_ref, ano_ref))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
             conn.commit()
@@ -81,14 +91,13 @@ with st.sidebar:
             conn.close()
             st.rerun()
 
-    # BOTÃO RESET MESTRE
     if st.button("🔴 LIMPAR TUDO"):
         conn = sqlite3.connect(DB_NAME)
         conn.execute("DROP TABLE IF EXISTS receitas")
         conn.execute("DROP TABLE IF EXISTS despesas")
         conn.commit()
         conn.close()
-        inicializar_banco() # Recria com as colunas novas
+        inicializar_banco()
         st.cache_data.clear()
         st.rerun()
 
@@ -116,8 +125,8 @@ with tab1:
             k1, k2, k3 = st.columns(3)
             v_orc = df_rf.groupby(['ano', 'codigo_full'])['orcado'].last().sum()
             v_real = df_rf['realizado'].sum()
-            k1.metric("Orçado (Seleção)", f"R$ {v_orc:,.2f}")
-            k2.metric("Realizado (Seleção)", f"R$ {v_real:,.2f}")
+            k1.metric("Orçado (Período)", f"R$ {v_orc:,.2f}")
+            k2.metric("Realizado (Período)", f"R$ {v_real:,.2f}")
             k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
 
             df_g = df_rf.groupby(['ano', 'mes'])[['realizado', 'previsao']].sum().reset_index()
@@ -125,7 +134,7 @@ with tab1:
             fig = go.Figure()
             fig.add_trace(go.Bar(x=df_g['label'], y=df_g['realizado'], name="Realizado", marker_color='#72A0C1'))
             fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao'], name="Previsão", line=dict(color='#FF9800', width=2, dash='dot')))
-            fig.update_layout(height=350, margin=dict(l=0, r=0, t=30, b=0))
+            fig.update_layout(height=350)
             st.plotly_chart(fig, use_container_width=True)
 
             df_rf['% s/ Total'] = (df_rf['realizado'] / total_rec * 100).fillna(0)
@@ -148,19 +157,18 @@ with tab2:
         if nat_desp_sel: df_df = df_df[df_df['natureza'].isin(nat_desp_sel)]
 
         if not df_df.empty:
-            # KPIs com fontes menores e Dotação Atualizada
             k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("Dotação Atualizada", f"R$ {df_df['cred_autorizado'].sum():,.2f}")
+            k1.metric("Créd. Autorizado", f"R$ {df_df['cred_autorizado'].sum():,.2f}")
             k2.metric("Empenhado", f"R$ {df_df['empenhado'].sum():,.2f}")
             k3.metric("Liquidado", f"R$ {df_df['liquidado'].sum():,.2f}")
             k4.metric("Pago", f"R$ {df_df['pago'].sum():,.2f}")
             k5.metric("Saldo Dotação", f"R$ {df_df['saldo'].sum():,.2f}")
             
             fig_d = go.Figure()
-            fig_d.add_trace(go.Bar(name='Empenhado', x=['Total Período'], y=[df_df['empenhado'].sum()], marker_color='#A9A9A9'))
-            fig_d.add_trace(go.Bar(name='Liquidado', x=['Total Período'], y=[df_df['liquidado'].sum()], marker_color='#72A0C1'))
-            fig_d.add_trace(go.Bar(name='Pago', x=['Total Período'], y=[df_df['pago'].sum()], marker_color='#2E7D32'))
-            fig_d.update_layout(height=300, barmode='group', margin=dict(l=0, r=0, t=20, b=0))
+            fig_d.add_trace(go.Bar(name='Autorizado', x=['Total'], y=[df_df['cred_autorizado'].sum()], marker_color='#E0E0E0'))
+            fig_d.add_trace(go.Bar(name='Empenhado', x=['Total'], y=[df_df['empenhado'].sum()], marker_color='#A9A9A9'))
+            fig_d.add_trace(go.Bar(name='Liquidado', x=['Total'], y=[df_df['liquidado'].sum()], marker_color='#72A0C1'))
+            fig_d.update_layout(height=300, barmode='group')
             st.plotly_chart(fig_d, use_container_width=True)
 
             df_df['% s/ Emp. Total'] = (df_df['liquidado'] / total_emp_p * 100).fillna(0)
@@ -171,17 +179,10 @@ with tab2:
 # --- ABA 3: CONFRONTO ---
 with tab3:
     if not df_rec_raw.empty and not df_desp_raw.empty:
-        st.title("⚖️ Confronto Financeiro e Orçamentário")
         tr = df_rec_raw['realizado'].sum()
-        te = df_desp_raw['empenhado'].sum()
         tp = df_desp_raw['pago'].sum()
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Receita Realizada Total", f"R$ {tr:,.2f}")
-        c2.metric("Despesa Empenhada Total", f"R$ {te:,.2f}")
-        c3.metric("Despesa Paga Total", f"R$ {tp:,.2f}")
-        
-        st.divider()
-        m1, m2 = st.columns(2)
-        m1.info(f"**Superávit Financeiro (Realizado - Pago): R$ {tr - tp:,.2f}**")
-        m2.warning(f"**Superávit Orçamentário (Realizado - Empenhado): R$ {tr - te:,.2f}**")
+        st.title("⚖️ Confronto Financeiro")
+        c1, c2 = st.columns(2)
+        c1.metric("Receita Realizada", f"R$ {tr:,.2f}")
+        c2.metric("Despesa Paga", f"R$ {tp:,.2f}")
+        st.info(f"**Resultado Final: R$ {tr - tp:,.2f}**")
