@@ -10,11 +10,11 @@ DB_NAME = 'dados_gestao_integrada.db'
 st.set_page_config(page_title="Gestão Integrada FIPLAN", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
-# CSS para diminuir o tamanho da fonte dos KPIs (campos destacados)
+# CSS CORRIGIDO: Diminui a fonte dos KPIs (campos destacados)
 st.markdown("""
     <style>
-    [data-testid="stMetricValue"] { font-size: 1.6rem !important; }
-    [data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
+    [data-testid="stMetricValue"] { font-size: 1.5rem !important; font-weight: 700; }
+    [data-testid="stMetricLabel"] { font-size: 0.8rem !important; color: #555; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -23,7 +23,6 @@ def inicializar_banco():
     conn.execute('''CREATE TABLE IF NOT EXISTS receitas 
         (mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT, 
         orcado REAL, realizado REAL, previsao REAL)''')
-    # Tabela recriada com a coluna de Crédito Autorizado
     conn.execute('''CREATE TABLE IF NOT EXISTS despesas 
         (mes INTEGER, ano INTEGER, uo TEXT, funcao TEXT, subfuncao TEXT, 
         programa TEXT, projeto TEXT, natureza TEXT, fonte TEXT,
@@ -65,7 +64,7 @@ with st.sidebar:
                 for _, row in df.iterrows():
                     uo = str(row.iloc[0]).strip()
                     if uo.isdigit():
-                        # Crédito Autorizado está na coluna 16 (Índice 16) do FIP 613
+                        # Coluna 16 = Crédito Autorizado (Dotação Atualizada)
                         dados.append((mes_ref, ano_ref, uo, str(row.iloc[2]), str(row.iloc[3]), str(row.iloc[4]), 
                                      str(row.iloc[5]), str(row.iloc[7]), str(row.iloc[8]),
                                      limpar_f(row.iloc[11]), limpar_f(row.iloc[21]), limpar_f(row.iloc[22]), 
@@ -73,9 +72,9 @@ with st.sidebar:
                 conn.execute("DELETE FROM despesas WHERE mes=? AND ano=?", (mes_ref, ano_ref))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
             conn.commit()
-            st.success("✅ Sucesso!")
+            st.success("✅ Importado com sucesso!")
         except Exception as e:
-            st.error(f"Erro no processamento: {e}")
+            st.error(f"Erro: {e}")
         finally:
             conn.close()
             st.rerun()
@@ -87,6 +86,7 @@ with st.sidebar:
         conn.commit()
         conn.close()
         inicializar_banco()
+        st.cache_data.clear()
         st.rerun()
 
 # --- CARGA ---
@@ -105,7 +105,9 @@ with tab1:
         meses_r = c2.multiselect("Meses:", sorted(df_rec_raw['mes'].unique()), default=df_rec_raw['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="mr")
         nat_r = c3.multiselect("Filtrar Naturezas:", sorted(df_rec_raw['natureza'].unique()), key="nr")
         
-        df_rf = df_rec_raw[(df_rec_raw['ano'].isin(anos_r)) & (df_rec_raw['mes'].isin(meses_r))]
+        df_periodo = df_rec_raw[(df_rec_raw['ano'].isin(anos_r)) & (df_rec_raw['mes'].isin(meses_r))]
+        total_rec = df_periodo['realizado'].sum()
+        df_rf = df_periodo.copy()
         if nat_r: df_rf = df_rf[df_rf['natureza'].isin(nat_r)]
         
         if not df_rf.empty:
@@ -125,8 +127,9 @@ with tab1:
             fig.update_layout(height=350, margin=dict(l=0, r=0, t=30, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
-            st.dataframe(df_rf[['codigo_full', 'natureza', 'realizado', 'orcado']].style.format({
-                'realizado': '{:,.2f}', 'orcado': '{:,.2f}'
+            df_rf['% s/ Total'] = (df_rf['realizado'] / total_rec * 100).fillna(0)
+            st.dataframe(df_rf[['codigo_full', 'natureza', 'realizado', '% s/ Total', 'orcado']].style.format({
+                'realizado': '{:,.2f}', 'orcado': '{:,.2f}', '% s/ Total': '{:.2f}%'
             }), height=400, use_container_width=True)
 
 # --- ABA 2: DESPESAS ---
@@ -139,10 +142,12 @@ with tab2:
         nat_desp_sel = f_c4.multiselect("Natureza:", sorted(df_desp_raw['natureza'].unique()))
         
         df_df = df_desp_raw[(df_desp_raw['ano'].isin(anos_d)) & (df_desp_raw['mes'].isin(meses_d))]
+        total_emp_p = df_df['empenhado'].sum()
         if func_sel: df_df = df_df[df_df['funcao'].isin(func_sel)]
         if nat_desp_sel: df_df = df_df[df_df['natureza'].isin(nat_desp_sel)]
 
         if not df_df.empty:
+            # KPIs COM FONTE MENOR (via CSS acima)
             k1, k2, k3, k4, k5 = st.columns(5)
             k1.metric("Dotação Atualizada", f"R$ {df_df['cred_autorizado'].sum():,.2f}")
             k2.metric("Empenhado", f"R$ {df_df['empenhado'].sum():,.2f}")
@@ -157,17 +162,25 @@ with tab2:
             fig_d.update_layout(height=300, barmode='group', margin=dict(l=0, r=0, t=20, b=0))
             st.plotly_chart(fig_d, use_container_width=True)
 
-            st.dataframe(df_df[['funcao', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago', 'saldo']].style.format({
-                'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}', 'saldo': '{:,.2f}'
+            df_df['% s/ Emp. Total'] = (df_df['liquidado'] / total_emp_p * 100).fillna(0)
+            st.dataframe(df_df[['funcao', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', '% s/ Emp. Total', 'pago', 'saldo']].style.format({
+                'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}', 'saldo': '{:,.2f}', '% s/ Emp. Total': '{:.2f}%'
             }), height=400, use_container_width=True)
 
 # --- ABA 3: CONFRONTO ---
 with tab3:
     if not df_rec_raw.empty and not df_desp_raw.empty:
         tr = df_rec_raw['realizado'].sum()
+        te = df_desp_raw['empenhado'].sum()
         tp = df_desp_raw['pago'].sum()
         st.title("⚖️ Confronto Financeiro")
-        m1, m2 = st.columns(2)
+        m1, m2, m3 = st.columns(3)
         m1.metric("Receita Realizada Total", f"R$ {tr:,.2f}")
-        m2.metric("Despesa Paga Total", f"R$ {tp:,.2f}")
-        st.info(f"**Resultado Final: R$ {tr - tp:,.2f}**")
+        m2.metric("Despesa Empenhada Total", f"R$ {te:,.2f}")
+        m3.metric("Despesa Paga Total", f"R$ {tp:,.2f}")
+        
+        st.divider()
+        st.info(f"**Superávit Financeiro (Realizado - Pago): R$ {tr - tp:,.2f}**")
+        st.warning(f"**Superávit Orçamentário (Realizado - Empenhado): R$ {tr - te:,.2f}**")
+else:
+    st.info("Aguardando dados para análise.")
