@@ -4,17 +4,14 @@ import sqlite3
 import plotly.graph_objects as go
 import re
 
-# --- CONFIGURAÇÃO DA UNIDADE (Altere aqui para cada painel) ---
-NOME_UNIDADE = "UO 03601 - FUNAJURIS" 
+# --- CONFIGURAÇÃO DA UNIDADE ---
+NOME_UNIDADE = "GESTÃO INTEGRADA FIPLAN" 
 
 DB_NAME = 'dados_gestao_integrada.db'
 st.set_page_config(page_title=f"FIPLAN - {NOME_UNIDADE}", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
-# Título visual no topo para não confundir as UOs
-st.title(f"📊 {NOME_UNIDADE}")
-
-# CSS: Letras menores nos KPIs
+# CSS: Mantendo o padrão de letras menores
 st.markdown("""
     <style>
     [data-testid="stMetricValue"] { font-size: 1.4rem !important; font-weight: 700; }
@@ -43,7 +40,7 @@ inicializar_banco()
 
 # --- SIDEBAR: IMPORTAÇÃO ---
 with st.sidebar:
-    st.subheader(f"📥 Importar: {NOME_UNIDADE}")
+    st.subheader("📥 Importar Dados")
     tipo_dado = st.radio("Tipo:", ["Receita", "Despesa"])
     arquivo = st.file_uploader(f"Arquivo {tipo_dado}", type=["xlsx"])
     mes_ref = st.selectbox("Mês", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
@@ -98,7 +95,7 @@ with tab1:
         nat_r = c3.multiselect("Filtrar Naturezas:", sorted(df_rec_raw['natureza'].unique()), key="nr")
         
         df_rf = df_rec_raw[(df_rec_raw['ano'].isin(anos_r)) & (df_rec_raw['mes'].isin(meses_r))]
-        total_rec_p = df_rf['realizado'].sum()
+        total_p = df_rf['realizado'].sum()
         if nat_r: df_rf = df_rf[df_rf['natureza'].isin(nat_r)]
         
         if not df_rf.empty:
@@ -114,9 +111,7 @@ with tab1:
             fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao'], name="Previsão", line=dict(color='#FF9800', width=2, dash='dot')))
             fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
             st.plotly_chart(fig, use_container_width=True)
-
-            df_rf['% s/ Total'] = (df_rf['realizado'] / total_rec_p * 100).fillna(0)
-            st.dataframe(df_rf[['codigo_full', 'natureza', 'realizado', '% s/ Total', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}', '% s/ Total': '{:.2f}%'}), height=450, use_container_width=True)
+            st.dataframe(df_rf[['codigo_full', 'natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), use_container_width=True)
 
 # --- ABA 2: DESPESAS ---
 with tab2:
@@ -130,7 +125,6 @@ with tab2:
         nat_sel = f6.multiselect("Natureza:", sorted(df_desp_raw['natureza'].unique()))
         
         df_df = df_desp_raw[(df_desp_raw['ano'].isin(anos_d)) & (df_desp_raw['mes'].isin(meses_d))]
-        total_emp_p = df_df['empenhado'].sum()
         if func_sel: df_df = df_df[df_df['funcao'].isin(func_sel)]
         if prog_sel: df_df = df_df[df_df['programa'].isin(prog_sel)]
         if proj_sel: df_df = df_df[df_df['projeto'].isin(proj_sel)]
@@ -142,22 +136,48 @@ with tab2:
             k2.metric("Empenhado", f"R$ {df_df['empenhado'].sum():,.2f}")
             k3.metric("Liquidado", f"R$ {df_df['liquidado'].sum():,.2f}")
             k4.metric("Pago", f"R$ {df_df['pago'].sum():,.2f}")
-            k5.metric("Saldo", f"R$ {df_df['saldo'].sum():,.2f}")
+            k5.metric("Saldo Dotação", f"R$ {df_df['saldo'].sum():,.2f}")
             
             fig_d = go.Figure()
             fig_d.add_trace(go.Bar(name='Empenhado', x=['Total'], y=[df_df['empenhado'].sum()], marker_color='#A9A9A9'))
             fig_d.add_trace(go.Bar(name='Liquidado', x=['Total'], y=[df_df['liquidado'].sum()], marker_color='#72A0C1'))
             fig_d.add_trace(go.Bar(name='Pago', x=['Total'], y=[df_df['pago'].sum()], marker_color='#2E7D32'))
-            fig_d.update_layout(height=300, barmode='group', margin=dict(l=0, r=0, t=10, b=0))
+            fig_d.update_layout(height=300, barmode='group')
             st.plotly_chart(fig_d, use_container_width=True)
-
-            df_df['% s/ Empenho'] = (df_df['liquidado'] / total_emp_p * 100).fillna(0)
-            st.dataframe(df_df[['funcao', 'programa', 'projeto', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', '% s/ Empenho', 'pago', 'saldo']].style.format({'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}', 'saldo': '{:,.2f}', '% s/ Empenho': '{:.2f}%'}), height=450, use_container_width=True)
+            st.dataframe(df_df[['funcao', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago', 'saldo']].style.format({'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}', 'saldo': '{:,.2f}'}), use_container_width=True)
 
 # --- ABA 3: CONFRONTO ---
 with tab3:
-    if not df_rec_raw.empty and not df_desp_raw.empty:
-        tr, te, tp = df_rec_raw['realizado'].sum(), df_desp_raw['empenhado'].sum(), df_desp_raw['pago'].sum()
-        st.subheader("⚖️ Confronto do Período")
-        st.info(f"**Superávit Financeiro (Receita - Pago): R$ {tr - tp:,.2f}**")
-        st.warning(f"**Superávit Orçamentário (Receita - Empenhado): R$ {tr - te:,.2f}**")
+    st.subheader("⚖️ Confronto Geral Financeiro e Orçamentário")
+    if not df_rec_raw.empty or not df_desp_raw.empty:
+        c_f1, c_f2 = st.columns(2)
+        anos_c = c_f1.multiselect("Filtrar Anos:", sorted(list(set(df_rec_raw['ano'].unique()) | set(df_desp_raw['ano'].unique()))), default=[2026], key="ac")
+        meses_c = c_f2.multiselect("Filtrar Meses:", range(1, 13), default=range(1, 13), format_func=lambda x: MESES_NOMES[x-1], key="mc")
+
+        tr = df_rec_raw[(df_rec_raw['ano'].isin(anos_c)) & (df_rec_raw['mes'].isin(meses_c))]['realizado'].sum()
+        te = df_desp_raw[(df_desp_raw['ano'].isin(anos_c)) & (df_desp_raw['mes'].isin(meses_c))]['empenhado'].sum()
+        tl = df_desp_raw[(df_desp_raw['ano'].isin(anos_c)) & (df_desp_raw['mes'].isin(meses_c))]['liquidado'].sum()
+        tp = df_desp_raw[(df_desp_raw['ano'].isin(anos_c)) & (df_desp_raw['mes'].isin(meses_c))]['pago'].sum()
+        
+        # KPIs do Confronto
+        k_c1, k_c2, k_c3, k_c4 = st.columns(4)
+        k_c1.metric("Receita Arrecadada", f"R$ {tr:,.2f}")
+        k_c2.metric("Despesa Empenhada", f"R$ {te:,.2f}")
+        k_c3.metric("Despesa Liquidada", f"R$ {tl:,.2f}")
+        k_c4.metric("Despesa Paga", f"R$ {tp:,.2f}")
+        
+        st.divider()
+        m1, m2 = st.columns(2)
+        m1.info(f"**Superávit Financeiro (Receita - Pago):** \n R$ {tr - tp:,.2f}")
+        m2.warning(f"**Superávit Orçamentário (Receita - Empenhado):** \n R$ {tr - te:,.2f}")
+
+        # Gráfico Comparativo de Confronto
+        fig_c = go.Figure()
+        fig_c.add_trace(go.Bar(name='Receita Arrecadada', x=['Confronto'], y=[tr], marker_color='green'))
+        fig_c.add_trace(go.Bar(name='Desp. Empenhada', x=['Confronto'], y=[te], marker_color='orange'))
+        fig_c.add_trace(go.Bar(name='Desp. Liquidada', x=['Confronto'], y=[tl], marker_color='#72A0C1'))
+        fig_c.add_trace(go.Bar(name='Desp. Paga', x=['Confronto'], y=[tp], marker_color='red'))
+        fig_c.update_layout(height=400, barmode='group')
+        st.plotly_chart(fig_c, use_container_width=True)
+    else:
+        st.info("Importe dados de Receita e Despesa para visualizar o confronto.")
