@@ -93,11 +93,10 @@ with tab1:
             v_real = df_rf['realizado'].sum()
             
             k1, k2, k3 = st.columns(3)
-            k1.metric("Orçado (Seleção)", f"R$ {v_orc:,.2f}")
-            k2.metric("Realizado (Seleção)", f"R$ {v_real:,.2f}")
+            k1.metric("Orçado (Período)", f"R$ {v_orc:,.2f}")
+            k2.metric("Realizado (Período)", f"R$ {v_real:,.2f}")
             k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
 
-            # Gráfico de Receita
             df_g = df_rf.groupby(['ano', 'mes'])[['realizado', 'previsao']].sum().reset_index()
             df_g['label'] = df_g.apply(lambda x: f"{MESES_NOMES[int(x['mes'])-1]}/{str(int(x['ano']))[2:]}", axis=1)
             fig = go.Figure()
@@ -106,7 +105,6 @@ with tab1:
             fig.update_layout(height=350, margin=dict(l=0, r=0, t=30, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
-            # Tabela
             df_rf['% s/ Total'] = (df_rf['realizado'] / total_geral_rec * 100).fillna(0)
             st.dataframe(df_rf[['codigo_full', 'natureza', 'realizado', '% s/ Total', 'orcado']].style.format({
                 'realizado': '{:,.2f}', 'orcado': '{:,.2f}', '% s/ Total': '{:.2f}%'
@@ -116,13 +114,20 @@ with tab1:
 # --- ABA 2: DESPESAS ---
 with tab2:
     if not df_desp_raw.empty:
-        d1, d2, d3 = st.columns([1, 1, 2])
-        func_sel = d1.multiselect("Função:", sorted(df_desp_raw['funcao'].unique()))
-        nat_desp_sel = d2.multiselect("Natureza:", sorted(df_desp_raw['natureza'].unique()))
-        font_sel = d3.multiselect("Fonte:", sorted(df_desp_raw['fonte'].unique()))
+        # Filtros de Período e Categorias
+        f_c1, f_c2, f_c3, f_c4, f_c5 = st.columns([1, 1, 1.5, 1.5, 1.5])
+        anos_d = f_c1.multiselect("Anos:", sorted(df_desp_raw['ano'].unique()), default=df_desp_raw['ano'].unique(), key="ad")
+        meses_d = f_c2.multiselect("Meses:", sorted(df_desp_raw['mes'].unique()), default=df_desp_raw['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="md")
+        func_sel = f_c3.multiselect("Função:", sorted(df_desp_raw['funcao'].unique()))
+        nat_desp_sel = f_c4.multiselect("Natureza:", sorted(df_desp_raw['natureza'].unique()))
+        font_sel = f_c5.multiselect("Fonte:", sorted(df_desp_raw['fonte'].unique()))
         
-        total_geral_emp = df_desp_raw['empenhado'].sum()
-        df_df = df_desp_raw.copy()
+        # Filtro de Período (para base do índice %)
+        df_periodo_desp = df_desp_raw[df_desp_raw['ano'].isin(anos_d) & df_desp_raw['mes'].isin(meses_d)]
+        total_geral_emp_periodo = df_periodo_desp['empenhado'].sum()
+        
+        # Filtro Final (Período + Categorias)
+        df_df = df_periodo_desp.copy()
         if func_sel: df_df = df_df[df_df['funcao'].isin(func_sel)]
         if nat_desp_sel: df_df = df_df[df_df['natureza'].isin(nat_desp_sel)]
         if font_sel: df_df = df_df[df_df['fonte'].isin(font_sel)]
@@ -134,23 +139,21 @@ with tab2:
             k3.metric("Pago", f"R$ {df_df['pago'].sum():,.2f}")
             k4.metric("Saldo Dotação", f"R$ {df_df['saldo'].sum():,.2f}")
             
-            # --- OPÇÕES DO GRÁFICO ---
             st.markdown("##### Configurar Gráfico de Totais")
             c_g1, c_g2, c_g3 = st.columns(3)
-            ver_emp = c_g1.checkbox("Ver Empenhado", value=True)
-            ver_liq = c_g2.checkbox("Ver Liquidado", value=True)
-            ver_pag = c_g3.checkbox("Ver Pago", value=False)
+            ver_emp = c_g1.checkbox("Ver Empenhado", value=True, key="ve")
+            ver_liq = c_g2.checkbox("Ver Liquidado", value=True, key="vl")
+            ver_pag = c_g3.checkbox("Ver Pago", value=False, key="vp")
 
             fig_d = go.Figure()
-            if ver_emp: fig_d.add_trace(go.Bar(name='Empenhado', x=['Total Selecionado'], y=[df_df['empenhado'].sum()], marker_color='#A9A9A9'))
-            if ver_liq: fig_d.add_trace(go.Bar(name='Liquidado', x=['Total Selecionado'], y=[df_df['liquidado'].sum()], marker_color='#72A0C1'))
-            if ver_pag: fig_d.add_trace(go.Bar(name='Pago', x=['Total Selecionado'], y=[df_df['pago'].sum()], marker_color='#2E7D32'))
+            if ver_emp: fig_d.add_trace(go.Bar(name='Empenhado', x=['Total Período'], y=[df_df['empenhado'].sum()], marker_color='#A9A9A9'))
+            if ver_liq: fig_d.add_trace(go.Bar(name='Liquidado', x=['Total Período'], y=[df_df['liquidado'].sum()], marker_color='#72A0C1'))
+            if ver_pag: fig_d.add_trace(go.Bar(name='Pago', x=['Total Período'], y=[df_df['pago'].sum()], marker_color='#2E7D32'))
             
             fig_d.update_layout(height=300, barmode='group', margin=dict(l=0, r=0, t=20, b=0))
             st.plotly_chart(fig_d, use_container_width=True)
 
-            # Tabela
-            df_df['% s/ Emp. Total'] = (df_df['liquidado'] / total_geral_emp * 100).fillna(0)
+            df_df['% s/ Emp. Total'] = (df_df['liquidado'] / total_geral_emp_periodo * 100).fillna(0)
             st.dataframe(df_df[['funcao', 'natureza', 'empenhado', 'liquidado', '% s/ Emp. Total', 'pago', 'saldo']].style.format({
                 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}', 'saldo': '{:,.2f}', '% s/ Emp. Total': '{:.2f}%'
             }), height=400, use_container_width=True)
@@ -159,10 +162,15 @@ with tab2:
 # --- ABA 3: CONFRONTO ---
 with tab3:
     if not df_rec_raw.empty and not df_desp_raw.empty:
-        tr = df_rec_raw['realizado'].sum()
-        te = df_desp_raw['empenhado'].sum()
-        tl = df_desp_raw['liquidado'].sum()
-        tp = df_desp_raw['pago'].sum()
+        # Filtros de Período para o Confronto
+        cf_1, cf_2 = st.columns(2)
+        anos_c = cf_1.multiselect("Anos Confronto:", sorted(list(set(df_rec_raw['ano'].unique()) | set(df_desp_raw['ano'].unique()))), default=[2026], key="ac")
+        meses_c = cf_2.multiselect("Meses Confronto:", range(1, 13), default=sorted(list(set(df_rec_raw['mes'].unique()) | set(df_desp_raw['mes'].unique()))), format_func=lambda x: MESES_NOMES[x-1], key="mc")
+
+        tr = df_rec_raw[df_rec_raw['ano'].isin(anos_c) & df_rec_raw['mes'].isin(meses_c)]['realizado'].sum()
+        te = df_desp_raw[df_desp_raw['ano'].isin(anos_c) & df_desp_raw['mes'].isin(meses_c)]['empenhado'].sum()
+        tl = df_desp_raw[df_desp_raw['ano'].isin(anos_c) & df_desp_raw['mes'].isin(meses_c)]['liquidado'].sum()
+        tp = df_desp_raw[df_desp_raw['ano'].isin(anos_c) & df_desp_raw['mes'].isin(meses_c)]['pago'].sum()
         
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Receita Realizada", f"R$ {tr:,.2f}")
@@ -181,3 +189,4 @@ with tab3:
         fig_c.add_trace(go.Bar(name='Pago', x=['Confronto'], y=[tp], marker_color='red'))
         fig_c.update_layout(height=350)
         st.plotly_chart(fig_c, use_container_width=True)
+    else: st.warning("Necessário dados de Receita e Despesa para confronto.")
