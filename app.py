@@ -12,11 +12,11 @@ DB_NAME = 'dados_gestao_integrada.db'
 st.set_page_config(page_title="Gestão Integrada FIPLAN", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
-# CSS: Letras menores nos KPIs
+# CSS: Mantendo as letras menores que você aprovou
 st.markdown("""
     <style>
     [data-testid="stMetricValue"] { font-size: 1.4rem !important; font-weight: 700; }
-    [data-testid="stMetricLabel"] { font-size: 0.85rem !important; font-weight: 600; }
+    [data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -37,38 +37,18 @@ def limpar_f(v):
     try: return float(v)
     except: return 0.0
 
-def gerar_pdf_gestao(titulo, df_r, df_d, tr, te, tp):
+def gerar_pdf_simples(titulo, tr, te, tp):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("helvetica", "B", 16)
-    pdf.cell(190, 10, titulo, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
-    pdf.ln(5)
-
-    # Seção de Receitas
+    pdf.cell(190, 10, titulo, 0, 1, "C")
+    pdf.ln(10)
     pdf.set_font("helvetica", "B", 12)
-    pdf.set_fill_color(240, 240, 240)
-    pdf.cell(190, 8, "RESUMO DE RECEITAS", 0, 1, "L", True)
-    pdf.set_font("helvetica", "", 9)
-    pdf.cell(95, 7, f"Total Realizado: R$ {tr:,.2f}", 0, 0)
-    pdf.cell(95, 7, f"Total Orçado: R$ {df_r.groupby(['ano', 'codigo_full'])['orcado'].last().sum():,.2f}", 0, 1)
-    pdf.ln(3)
-
-    # Seção de Despesas
-    pdf.set_font("helvetica", "B", 12)
-    pdf.cell(190, 8, "RESUMO DE DESPESAS", 0, 1, "L", True)
-    pdf.set_font("helvetica", "", 9)
-    pdf.cell(63, 7, f"Empenhado: R$ {te:,.2f}", 0, 0)
-    pdf.cell(63, 7, f"Liquidado: R$ {df_d['liquidado'].sum():,.2f}", 0, 0)
-    pdf.cell(64, 7, f"Pago: R$ {tp:,.2f}", 0, 1)
-    pdf.ln(3)
-
-    # Confronto
-    pdf.set_font("helvetica", "B", 12)
-    pdf.cell(190, 8, "RESULTADO DO PERÍODO", 0, 1, "L", True)
-    pdf.set_font("helvetica", "B", 10)
-    pdf.cell(190, 8, f"Superavit Financeiro (Rec. - Pago): R$ {tr - tp:,.2f}", 0, 1)
-    pdf.cell(190, 8, f"Superavit Orcamentario (Rec. - Empenhado): R$ {tr - te:,.2f}", 0, 1)
-
+    pdf.cell(190, 8, "RESUMO FINANCEIRO", 1, 1, "C")
+    pdf.set_font("helvetica", "", 10)
+    pdf.cell(95, 10, f"Receita Realizada: R$ {tr:,.2f}", 1)
+    pdf.cell(95, 10, f"Despesa Paga: R$ {tp:,.2f}", 1, 1)
+    pdf.cell(190, 10, f"Superavit Financeiro: R$ {tr - tp:,.2f}", 1, 1)
     return bytes(pdf.output())
 
 inicializar_banco()
@@ -81,7 +61,7 @@ with st.sidebar:
     mes_ref = st.selectbox("Mês", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
     ano_ref = st.number_input("Ano", value=2026)
     
-    if arquivo and st.button("🚀 Processar"):
+    if arquivo and st.button("🚀 Processar Dados"):
         conn = sqlite3.connect(DB_NAME)
         if tipo_dado == "Receita":
             df = pd.read_excel(arquivo, skiprows=7)
@@ -139,16 +119,18 @@ with tab1:
             k1, k2, k3 = st.columns(3)
             k1.metric("Orçado", f"R$ {v_orc:,.2f}"); k2.metric("Realizado", f"R$ {v_real:,.2f}"); k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
 
+            # Restaurando Gráfico de Evolução (Verde)
+            df_g = df_rf.groupby(['ano', 'mes'])[['realizado', 'previsao']].sum().reset_index()
+            df_g['label'] = df_g.apply(lambda x: f"{MESES_NOMES[int(x['mes'])-1]}/{str(int(x['ano']))[2:]}", axis=1)
             fig = go.Figure()
-            fig.add_trace(go.Bar(x=df_rf['natureza'][:10], y=df_rf['realizado'][:10], marker_color='#2E7D32'))
+            fig.add_trace(go.Bar(x=df_g['label'], y=df_g['realizado'], name="Realizado", marker_color='#2E7D32'))
+            fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao'], name="Previsão", line=dict(color='#FF9800', width=2, dash='dot')))
             fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
             st.plotly_chart(fig, use_container_width=True)
-            
-            # Botão PDF Receita
-            st.download_button("📄 Gerar Relatório PDF", data=gerar_pdf_gestao("Relatorio de Receitas", df_rf, df_desp_raw, v_real, 0, 0), file_name="relatorio_receita.pdf")
 
             df_rf['% s/ Total'] = (df_rf['realizado'] / total_rec_geral * 100).fillna(0)
             st.dataframe(df_rf[['codigo_full', 'natureza', 'realizado', '% s/ Total', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}', '% s/ Total': '{:.2f}%'}), height=450, use_container_width=True)
+            st.download_button("📄 PDF Receita", data=gerar_pdf_simples("Relatório de Receitas", v_real, 0, 0), file_name="receitas.pdf")
 
 # --- ABA 2: DESPESAS ---
 with tab2:
@@ -176,23 +158,22 @@ with tab2:
             k4.metric("Pago", f"R$ {df_df['pago'].sum():,.2f}")
             k5.metric("Saldo", f"R$ {df_df['saldo'].sum():,.2f}")
             
+            # Gráfico de Despesas com as 3 colunas
             fig_d = go.Figure()
             fig_d.add_trace(go.Bar(name='Empenhado', x=['Total'], y=[df_df['empenhado'].sum()], marker_color='#A9A9A9'))
             fig_d.add_trace(go.Bar(name='Liquidado', x=['Total'], y=[df_df['liquidado'].sum()], marker_color='#72A0C1'))
-            fig_d.update_layout(height=300, barmode='group')
+            fig_d.add_trace(go.Bar(name='Pago', x=['Total'], y=[df_df['pago'].sum()], marker_color='#2E7D32'))
+            fig_d.update_layout(height=300, barmode='group', margin=dict(l=0, r=0, t=10, b=0))
             st.plotly_chart(fig_d, use_container_width=True)
-            
-            # Botão PDF Despesa
-            st.download_button("📄 Gerar Relatório PDF", data=gerar_pdf_gestao("Relatorio de Despesas", df_rec_raw, df_df, 0, df_df['empenhado'].sum(), df_df['pago'].sum()), file_name="relatorio_despesa.pdf")
 
             df_df['% s/ Empenho'] = (df_df['liquidado'] / total_emp_geral * 100).fillna(0)
             st.dataframe(df_df[['funcao', 'programa', 'projeto', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', '% s/ Empenho', 'pago', 'saldo']].style.format({'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}', 'saldo': '{:,.2f}', '% s/ Empenho': '{:.2f}%'}), height=450, use_container_width=True)
+            st.download_button("📄 PDF Despesa", data=gerar_pdf_simples("Relatório de Despesas", 0, 0, df_df['pago'].sum()), file_name="despesas.pdf")
 
 # --- ABA 3: CONFRONTO ---
 with tab3:
     if not df_rec_raw.empty and not df_desp_raw.empty:
         tr, te, tp = df_rec_raw['realizado'].sum(), df_desp_raw['empenhado'].sum(), df_desp_raw['pago'].sum()
-        st.title("⚖️ Confronto Financeiro e Orçamentário")
+        st.title("⚖️ Confronto Geral")
         st.info(f"**Superávit Financeiro (Receita - Pago): R$ {tr - tp:,.2f}**")
         st.warning(f"**Superávit Orçamentário (Receita - Empenhado): R$ {tr - te:,.2f}**")
-        st.download_button("📄 Gerar Relatório Consolidado", data=gerar_pdf_gestao("Confronto Geral FIPLAN", df_rec_raw, df_desp_raw, tr, te, tp), file_name="confronto_geral.pdf")
