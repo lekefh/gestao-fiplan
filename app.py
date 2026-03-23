@@ -4,259 +4,168 @@ import sqlite3
 import plotly.graph_objects as go
 import re
 
-# --- CONFIGURAÇÃO ---
+# --- CONFIGURAÇÃO DA UNIDADE ---
+NOME_UNIDADE = "GESTÃO INTEGRADA FIPLAN" 
+
 DB_NAME = 'dados_gestao_integrada.db'
-st.set_page_config(page_title="Gestão Integrada FIPLAN", layout="wide")
-
+st.set_page_config(page_title=f"FIPLAN - {NOME_UNIDADE}", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
-MESES_MAPA = {
-    "JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4, "MAIO": 5, "JUNHO": 6,
-    "JULHO": 7, "AGOSTO": 8, "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12
-}
 
-st.markdown("<style>[data-testid='stMetricValue'] { font-size: 1.4rem !important; font-weight: 700; }</style>", unsafe_allow_html=True)
+# CSS: Mantendo o padrão de letras menores
+st.markdown("""
+    <style>
+    [data-testid="stMetricValue"] { font-size: 1.4rem !important; font-weight: 700; }
+    [data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# --- BANCO ---
 def inicializar_banco():
     conn = sqlite3.connect(DB_NAME)
-
-    conn.execute('''CREATE TABLE IF NOT EXISTS receitas (
-        mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT,
-        orcado REAL, realizado REAL, previsao REAL
-    )''')
-
-    conn.execute('''CREATE TABLE IF NOT EXISTS despesas (
-        mes INTEGER, ano INTEGER, uo TEXT, funcao TEXT, subfuncao TEXT,
+    conn.execute('''CREATE TABLE IF NOT EXISTS receitas 
+        (mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT, 
+        orcado REAL, realizado REAL, previsao REAL)''')
+    # Estrutura adaptada para o FIP 616
+    conn.execute('''CREATE TABLE IF NOT EXISTS despesas 
+        (mes INTEGER, ano INTEGER, uo TEXT, funcao TEXT, subfuncao TEXT, 
         programa TEXT, projeto TEXT, natureza TEXT, fonte TEXT,
-        orcado_inicial REAL, cred_autorizado REAL,
-        empenhado REAL, liquidado REAL, pago REAL
-    )''')
-
+        orcado_inicial REAL, cred_autorizado REAL, empenhado REAL, liquidado REAL, pago REAL)''')
     conn.close()
 
 def limpar_f(v):
-    if pd.isna(v) or v == "" or v == "-":
-        return 0.0
-    v = str(v).replace('.', '').replace(',', '.')
-    try:
-        return float(v)
-    except:
-        return 0.0
-
-def detectar_mes(arquivo):
-    try:
-        df_scan = pd.read_excel(arquivo, nrows=10, header=None)
-        for r in range(len(df_scan)):
-            for celula in df_scan.iloc[r]:
-                texto = str(celula).upper()
-                for nome, num in MESES_MAPA.items():
-                    if nome in texto:
-                        return num
-    except:
-        return None
-    return None
+    if pd.isna(v) or v == "" or v == "-": return 0.0
+    if isinstance(v, str): v = str(v).replace('.', '').replace(',', '.')
+    try: return float(v)
+    except: return 0.0
 
 inicializar_banco()
 
-# --- IMPORTAÇÃO ---
+# --- SIDEBAR: IMPORTAÇÃO ---
 with st.sidebar:
     st.subheader("📥 Importar Dados")
-
-    tipo = st.radio("Tipo:", ["Receita", "Despesa"])
-    arq = st.file_uploader("Selecionar Arquivo", type=["xlsx"])
-
-    if arq and st.button("🚀 Processar Dados"):
-        m_ref = detectar_mes(arq)
-
-        if not m_ref:
-            st.error("Mês não detectado no arquivo.")
-            st.stop()
-
+    tipo_dado = st.radio("Tipo:", ["Receita", "Despesa"])
+    arquivo = st.file_uploader(f"Arquivo {tipo_dado}", type=["xlsx"])
+    mes_ref = st.selectbox("Mês", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
+    ano_ref = st.number_input("Ano", value=2026)
+    
+    if arquivo and st.button("🚀 Processar Dados"):
         conn = sqlite3.connect(DB_NAME)
-
-        if tipo == "Receita":
-            df = pd.read_excel(arq, skiprows=7)
-
-            dados = []
-            for _, row in df.iterrows():
-                cod = str(row.iloc[0]).strip()
-                nat = str(row.iloc[1]).strip()
-
-                if re.match(r'^\d', cod) and len(cod) >= 11:
-                    dados.append((
-                        m_ref, 2026, cod, nat,
-                        limpar_f(row.iloc[3]),
-                        limpar_f(row.iloc[6]),
-                        limpar_f(row.iloc[5])
-                    ))
-
-            conn.execute("DELETE FROM receitas WHERE mes=?", (m_ref,))
-            conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?)", dados)
-
-        else:
-            df = pd.read_excel(arq, skiprows=6)
-            df.columns = df.columns.str.strip().str.upper()
-
-            df_detalhe = df[
-                (df['UG'].astype(str) != '0') &
-                (df['ELEMENTO'].astype(float) > 0)
-            ].copy()
-
-            dados = []
-            for _, row in df_detalhe.iterrows():
-                dados.append((
-                    m_ref, 2026,
-                    str(row['UO']).strip(),
-                    str(row['FUNÇÃO']).strip(),
-                    str(row['SUBFUNÇÃO']).strip(),
-                    str(row['PROGRAMA']).strip(),
-                    str(row['PAOE']).strip(),
-                    str(row['NATUREZA DESPESA']).strip(),
-                    str(row['FONTE']).strip(),
-                    limpar_f(row['ORÇADO INICIAL']),
-                    limpar_f(row['CRÉDITO AUTORIZADO']),
-                    limpar_f(row['EMPENHADO']),
-                    limpar_f(row['LIQUIDADO']),
-                    limpar_f(row['PAGO'])
-                ))
-
-            conn.execute("DELETE FROM despesas WHERE mes=?", (m_ref,))
-            conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
-
-        conn.commit()
-        conn.close()
-
-        st.success(f"✅ {MESES_NOMES[m_ref-1]} importado com sucesso!")
-        st.rerun()
+        try:
+            if tipo_dado == "Receita":
+                df = pd.read_excel(arquivo, skiprows=7)
+                dados = []
+                for _, row in df.iterrows():
+                    cod, nat = str(row.iloc[0]).strip(), str(row.iloc[1]).strip()
+                    if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) >= 13:
+                        dados.append((mes_ref, ano_ref, cod, nat, limpar_f(row.iloc[3]), limpar_f(row.iloc[6]), limpar_f(row.iloc[5])))
+                conn.execute("DELETE FROM receitas WHERE mes=? AND ano=?", (mes_ref, ano_ref))
+                conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?)", dados)
+            else:
+                # NOVO MAPEAMENTO PARA FIP 616 (Pula 6 linhas de cabeçalho)
+                df = pd.read_excel(arquivo, skiprows=6)
+                df.columns = df.columns.str.strip().str.upper()
+                dados = []
+                for _, row in df.iterrows():
+                    uo = str(row.get('UO', '')).strip()
+                    if uo != "" and uo != "nan":
+                        dados.append((
+                            mes_ref, ano_ref, uo, 
+                            str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), 
+                            str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), 
+                            str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')),
+                            limpar_f(row.get('ORÇADO INICIAL', 0)), 
+                            limpar_f(row.get('CRÉDITO AUTORIZADO', 0)), 
+                            limpar_f(row.get('EMPENHADO', 0)), 
+                            limpar_f(row.get('LIQUIDADO', 0)), 
+                            limpar_f(row.get('PAGO', 0))
+                        ))
+                conn.execute("DELETE FROM despesas WHERE mes=? AND ano=?", (mes_ref, ano_ref))
+                conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
+            conn.commit(); st.success("✅ Importado!"); st.rerun()
+        except Exception as e: st.error(f"Erro: {e}")
+        finally: conn.close()
 
     if st.button("🔴 LIMPAR TUDO"):
-        conn = sqlite3.connect(DB_NAME)
-        conn.execute("DROP TABLE IF EXISTS receitas")
-        conn.execute("DROP TABLE IF EXISTS despesas")
-        conn.commit()
-        conn.close()
+        conn = sqlite3.connect(DB_NAME); conn.execute("DROP TABLE IF EXISTS receitas"); conn.execute("DROP TABLE IF EXISTS despesas")
+        conn.commit(); conn.close(); inicializar_banco(); st.rerun()
 
-        inicializar_banco()
-        st.rerun()
-
-# --- LEITURA ---
+# --- CARGA ---
 conn = sqlite3.connect(DB_NAME)
-df_rec = pd.read_sql("SELECT * FROM receitas", conn)
+df_rec_raw = pd.read_sql("SELECT * FROM receitas WHERE natureza != 'None'", conn)
 df_desp_raw = pd.read_sql("SELECT * FROM despesas", conn)
 conn.close()
 
-# --- LIMPEZA DE CHAVES (CRÍTICO) ---
-for col in ['funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte']:
-    if col in df_desp_raw.columns:
-        df_desp_raw[col] = df_desp_raw[col].astype(str).str.strip()
+tab1, tab2, tab3 = st.tabs(["📊 Receitas", "💸 Despesas", "⚖️ Confronto"])
 
-# --- CÁLCULO MENSAL CORRETO ---
-def calcular_mensal(df):
-    if df.empty:
-        return df
-
-    keys = ['funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte']
-    cols = ['empenhado', 'liquidado', 'pago']
-
-    # CONSOLIDA por chave + mês
-    df_grouped = (
-        df.groupby(keys + ['mes'], as_index=False)[cols + ['cred_autorizado']]
-        .sum()
-    )
-
-    # ORDENA corretamente
-    df_grouped = df_grouped.sort_values(keys + ['mes'])
-
-    # CALCULA DIFERENÇA
-    for col in cols:
-        df_grouped[col] = df_grouped.groupby(keys)[col].diff()
-
-        # primeiro mês = valor original
-        mask_primeiro = df_grouped.groupby(keys)['mes'].transform('min') == df_grouped['mes']
-        df_grouped.loc[mask_primeiro, col] = df_grouped.loc[mask_primeiro, col].fillna(
-            df_grouped.loc[mask_primeiro, col]
-        )
-
-        # segurança contra negativo
-        df_grouped[col] = df_grouped[col].clip(lower=0)
-
-    return df_grouped
-
-df_desp_mensal = calcular_mensal(df_desp_raw)
-
-# --- DASHBOARD ---
-t1, t2 = st.tabs(["📊 Receitas", "💸 Despesas"])
-
-# --- RECEITAS ---
-with t1:
-    if not df_rec.empty:
-        mr = st.multiselect(
-            "Filtrar Meses:",
-            sorted(df_rec['mes'].unique()),
-            default=df_rec['mes'].unique(),
-            format_func=lambda x: MESES_NOMES[x-1]
-        )
-
-        df_rf = df_rec[df_rec['mes'].isin(mr)]
-
-        st.metric("Total Realizado", f"R$ {df_rf['realizado'].sum():,.2f}")
-
-        st.dataframe(
-            df_rf[['natureza', 'realizado', 'orcado']]
-            .style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}),
-            use_container_width=True
-        )
-
-# --- DESPESAS ---
-with t2:
-    if not df_desp_mensal.empty:
-
-        f1, f2, f3 = st.columns(3)
-
-        ms_d = f1.multiselect(
-            "Meses Selecionados:",
-            sorted(df_desp_mensal['mes'].unique()),
-            default=df_desp_mensal['mes'].unique(),
-            format_func=lambda x: MESES_NOMES[x-1]
-        )
-
-        ps = f2.multiselect("Programa:", sorted(df_desp_mensal['programa'].unique()))
-        fts = f3.multiselect("Fonte:", sorted(df_desp_mensal['fonte'].unique()))
-
-        df_f = df_desp_mensal[df_desp_mensal['mes'].isin(ms_d)]
-
-        if ps:
-            df_f = df_f[df_f['programa'].isin(ps)]
-
-        if fts:
-            df_f = df_f[df_f['fonte'].isin(fts)]
-
-        if not df_f.empty:
-
-            # CRÉDITO AUTORIZADO (snapshot correto)
-            m_max = df_desp_raw['mes'].dropna().max()
-
-            if pd.isna(m_max):
-                v_aut = 0
-            else:
-                v_aut = df_desp_raw[df_desp_raw['mes'] == m_max]['cred_autorizado'].sum()
-
-            ve = df_f['empenhado'].sum()
-            vp = df_f['pago'].sum()
-
+# --- ABA 1: RECEITAS ---
+with tab1:
+    if not df_rec_raw.empty:
+        c1, c2, c3 = st.columns([1, 1, 2])
+        anos_r = c1.multiselect("Anos:", sorted(df_rec_raw['ano'].unique()), default=df_rec_raw['ano'].unique(), key="ar")
+        meses_r = c2.multiselect("Meses:", sorted(df_rec_raw['mes'].unique()), default=df_rec_raw['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="mr")
+        nat_r = c3.multiselect("Filtrar Naturezas:", sorted(df_rec_raw['natureza'].unique()), key="nr")
+        df_rf = df_rec_raw[(df_rec_raw['ano'].isin(anos_r)) & (df_rec_raw['mes'].isin(meses_r))]
+        total_p = df_rf['realizado'].sum()
+        if nat_r: df_rf = df_rf[df_rf['natureza'].isin(nat_r)]
+        if not df_rf.empty:
             k1, k2, k3 = st.columns(3)
+            v_orc = df_rf.groupby(['ano', 'codigo_full'])['orcado'].last().sum()
+            v_real = df_rf['realizado'].sum()
+            k1.metric("Orçado", f"R$ {v_orc:,.2f}"); k2.metric("Realizado", f"R$ {v_real:,.2f}"); k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
+            df_g = df_rf.groupby(['ano', 'mes'])[['realizado', 'previsao']].sum().reset_index()
+            df_g['label'] = df_g.apply(lambda x: f"{MESES_NOMES[int(x['mes'])-1]}/{str(int(x['ano']))[2:]}", axis=1)
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=df_g['label'], y=df_g['realizado'], name="Realizado", marker_color='#2E7D32'))
+            fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao'], name="Previsão", line=dict(color='#FF9800', width=2, dash='dot')))
+            fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0)); st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(df_rf[['codigo_full', 'natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), use_container_width=True)
 
-            k1.metric("Créd. Autorizado (Atual)", f"R$ {v_aut:,.2f}")
-            k2.metric("Empenhado (Mensal)", f"R$ {ve:,.2f}")
-            k3.metric("Pago (Mensal)", f"R$ {vp:,.2f}")
+# --- ABA 2: DESPESAS (Novo FIP 616) ---
+with tab2:
+    if not df_desp_raw.empty:
+        f1, f2, f3, f4, f5, f6 = st.columns(6)
+        anos_d = f1.multiselect("Anos:", sorted(df_desp_raw['ano'].unique()), default=df_desp_raw['ano'].unique(), key="ad")
+        meses_d = f2.multiselect("Meses:", sorted(df_desp_raw['mes'].unique()), default=df_desp_raw['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="md")
+        func_sel = f3.multiselect("Função:", sorted(df_desp_raw['funcao'].unique()))
+        sub_sel = f4.multiselect("Subfunção:", sorted(df_desp_raw['subfuncao'].unique())) # NOVO FILTRO
+        font_sel = f5.multiselect("Fonte:", sorted(df_desp_raw['fonte'].unique())) # NOVO FILTRO
+        nat_sel = f6.multiselect("Natureza:", sorted(df_desp_raw['natureza'].unique()))
+        
+        df_df = df_desp_raw[(df_desp_raw['ano'].isin(anos_d)) & (df_desp_raw['mes'].isin(meses_d))]
+        if func_sel: df_df = df_df[df_df['funcao'].isin(func_sel)]
+        if sub_sel: df_df = df_df[df_df['subfuncao'].isin(sub_sel)]
+        if font_sel: df_df = df_df[df_df['fonte'].isin(font_sel)]
+        if nat_sel: df_df = df_df[df_df['natureza'].isin(nat_sel)]
 
-            st.dataframe(
-                df_f[['funcao', 'subfuncao', 'programa', 'projeto', 'fonte',
-                      'natureza', 'cred_autorizado', 'empenhado', 'pago']]
-                .style.format({
-                    'cred_autorizado': '{:,.2f}',
-                    'empenhado': '{:,.2f}',
-                    'pago': '{:,.2f}'
-                }),
-                use_container_width=True
-            )
+        if not df_df.empty:
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Créd. Autorizado", f"R$ {df_df['cred_autorizado'].sum():,.2f}")
+            k2.metric("Empenhado", f"R$ {df_df['empenhado'].sum():,.2f}")
+            k3.metric("Liquidado", f"R$ {df_df['liquidado'].sum():,.2f}")
+            k4.metric("Pago", f"R$ {df_df['pago'].sum():,.2f}")
+            
+            fig_d = go.Figure()
+            fig_d.add_trace(go.Bar(name='Empenhado', x=['Total'], y=[df_df['empenhado'].sum()], marker_color='#A9A9A9'))
+            fig_d.add_trace(go.Bar(name='Liquidado', x=['Total'], y=[df_df['liquidado'].sum()], marker_color='#72A0C1'))
+            fig_d.add_trace(go.Bar(name='Pago', x=['Total'], y=[df_df['pago'].sum()], marker_color='#2E7D32'))
+            fig_d.update_layout(height=300, barmode='group'); st.plotly_chart(fig_d, use_container_width=True)
+            st.dataframe(df_df[['funcao', 'subfuncao', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
+                'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'}), use_container_width=True)
+
+# --- ABA 3: CONFRONTO ---
+with tab3:
+    if not df_rec_raw.empty or not df_desp_raw.empty:
+        st.subheader("⚖️ Confronto Geral")
+        anos_c = st.multiselect("Anos Confronto:", sorted(list(set(df_rec_raw['ano'].unique()) | set(df_desp_raw['ano'].unique()))), default=[2026], key="ac")
+        tr = df_rec_raw[df_rec_raw['ano'].isin(anos_c)]['realizado'].sum()
+        te = df_desp_raw[df_desp_raw['ano'].isin(anos_c)]['empenhado'].sum()
+        tp = df_desp_raw[df_desp_raw['ano'].isin(anos_c)]['pago'].sum()
+        
+        k_c1, k_c2, k_c3 = st.columns(3)
+        k_c1.metric("Receita Arrecadada", f"R$ {tr:,.2f}")
+        k_c2.metric("Despesa Empenhada", f"R$ {te:,.2f}")
+        k_c3.metric("Despesa Paga", f"R$ {tp:,.2f}")
+        
+        st.divider()
+        m1, m2 = st.columns(2)
+        m1.info(f"**Superávit Financeiro (Receita - Pago):** \n R$ {tr - tp:,.2f}")
+        m2.warning(f"**Superávit Orçamentário (Receita - Empenhado):** \n R$ {tr - te:,.2f}")
