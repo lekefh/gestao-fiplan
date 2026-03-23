@@ -49,7 +49,7 @@ with st.sidebar:
     if arquivo and st.button("🚀 Processar Dados"):
         m_final = detectar_mes(arquivo)
         if not m_final:
-            st.error("Mês não detectado na linha 6.")
+            st.error("Mês não detectado no arquivo.")
             st.stop()
         conn = sqlite3.connect(DB_NAME)
         try:
@@ -58,15 +58,21 @@ with st.sidebar:
                 dados = []
                 for _, row in df.iterrows():
                     cod = str(row.iloc[0]).strip().replace('"', '')
-                    # REGRA RECEITA: Desconsidera linhas sintéticas (que terminam em .0.0.00 ou similares)
-                    # Pegamos apenas códigos com final específico ou que são analíticos
-                    if re.match(r'^\d', cod) and not cod.endswith('.0.0.00') and not cod.endswith('.00.0.0.00'):
+                    # REGRA SOLICITADA: 
+                    # 1. Pega naturezas que não terminam em .0.0.00 (Analíticas)
+                    # 2. Se o código começa com 6, o valor é tratado como dedutivo (negativo)
+                    if re.match(r'^\d', cod) and not cod.endswith('.0.0.00'):
+                        valor_realizado = limpar_f(row.iloc[6])
+                        if cod.startswith('6'):
+                            valor_realizado = -abs(valor_realizado) # Garante que seja subtração
+                        
                         dados.append((m_final, 2026, cod, str(row.iloc[1]).replace('"', ''), 
-                                     limpar_f(row.iloc[3]), limpar_f(row.iloc[6]), limpar_f(row.iloc[5])))
+                                     limpar_f(row.iloc[3]), valor_realizado, limpar_f(row.iloc[5])))
+                
                 conn.execute("DELETE FROM receitas WHERE mes=?", (m_final,))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?)", dados)
             else:
-                # DESPESA FIP 616
+                # DESPESA FIP 616 (Mantendo a lógica centavo a centavo que funcionou)
                 df = pd.read_excel(arquivo, skiprows=6)
                 df.columns = df.columns.str.strip().str.upper()
                 dados = []
@@ -86,7 +92,7 @@ with st.sidebar:
                 conn.execute("DELETE FROM despesas WHERE mes=?", (m_final,))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
             conn.commit()
-            st.success(f"✅ Importado: {MESES_NOMES[m_final-1]}")
+            st.success(f"✅ Sucesso! Mês {MESES_NOMES[m_final-1]} Importado.")
             st.rerun()
         except Exception as e: st.error(f"Erro: {e}")
         finally: conn.close()
@@ -108,7 +114,6 @@ with tab1:
         c1, c2 = st.columns([1, 2])
         ms_r = c1.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msr")
         br = c2.text_input("Natureza (Contém):", key="br_r")
-        
         df_rf = df_rec[df_rec['mes'].isin(ms_r)]
         if br: df_rf = df_rf[df_rf['natureza'].str.contains(br, case=False, na=False)]
         
@@ -118,22 +123,21 @@ with tab1:
             
             k1, k2, k3 = st.columns(3)
             k1.metric("Orçado Atual", f"R$ {v_orc:,.2f}")
-            k2.metric("Realizado (Soma)", f"R$ {v_real:,.2f}")
+            k2.metric("Líquido Arrecadado", f"R$ {v_real:,.2f}")
             k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
 
-            # Gráfico Verde Original
+            # Gráfico de Barras Verde
             df_g = df_rf.groupby(['mes'])[['realizado']].sum().reset_index()
-            fig = go.Figure()
-            fig.add_trace(go.Bar(x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]), y=df_g['realizado'], name="Realizado", marker_color='#2E7D32'))
+            fig = go.Figure(data=[go.Bar(x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]), y=df_g['realizado'], marker_color='#2E7D32')])
             st.plotly_chart(fig, use_container_width=True)
             
             st.dataframe(df_rf[['codigo_full', 'natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), width='stretch')
 
 with tab2:
+    # (Aba de despesas mantida estável conforme sua aprovação anterior)
     if not df_desp.empty:
-        # Filtros e métricas da despesa (Mantendo a lógica que funcionou centavo a centavo)
         f1, f2, f3 = st.columns(3)
-        ms_d = f1.multiselect("Meses:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msd")
+        ms_d = f1.multiselect("Meses Selecionados:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msd")
         ps = f2.multiselect("Programa:", sorted(df_desp['programa'].unique()))
         bd = f3.text_input("Natureza (Contém):", key="bd_d")
         
@@ -143,7 +147,6 @@ with tab2:
         
         if not df_f.empty:
             m_max = max(ms_d)
-            # Orçamento do último mês
             v_aut = df_desp[df_desp['mes'] == m_max].groupby(['uo','funcao','subfuncao','programa','projeto','natureza','fonte'])['cred_autorizado'].max().sum()
             ve, vl, vp = df_f['empenhado'].sum(), df_f['liquidado'].sum(), df_f['pago'].sum()
             
