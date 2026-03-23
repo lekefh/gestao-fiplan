@@ -84,13 +84,11 @@ def calcular_incremental(df, colunas_acumuladas):
     df = df.sort_values(by=['mes'])
     chaves = ['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte'] if 'uo' in df.columns else ['codigo_full']
     df_res = df.copy()
-    
     for mes in sorted(df['mes'].unique()):
         if mes > df['mes'].min():
             for _, grupo in df.groupby(chaves):
                 val_atual = grupo[grupo['mes'] == mes]
                 val_anterior = grupo[grupo['mes'] < mes].sort_values('mes', ascending=False).head(1)
-                
                 if not val_atual.empty and not val_anterior.empty:
                     idx = val_atual.index[0]
                     for col in colunas_acumuladas:
@@ -107,6 +105,8 @@ conn.close()
 df_rec_inc = calcular_incremental(df_rec_raw, ['realizado'])
 df_desp_inc = calcular_incremental(df_desp_raw, ['empenhado', 'liquidado', 'pago'])
 
+# --- LÓGICA DE FILTRAGEM GLOBAL (Resolve o NameError) ---
+st.write("") # Espaço para layout
 tab1, tab2, tab3 = st.tabs(["📊 Receitas", "💸 Despesas", "⚖️ Confronto"])
 
 # --- ABA 1: RECEITAS ---
@@ -121,20 +121,17 @@ with tab1:
         if nat_r: df_rf = df_rf[df_rf['natureza'].isin(nat_r)]
         
         if not df_rf.empty:
-            v_real = df_rf['realizado'].sum()
-            v_orc = df_rf[df_rf['mes'] == df_rf['mes'].max()].groupby(['ano', 'codigo_full'])['orcado'].last().sum()
+            v_real_rec = df_rf['realizado'].sum()
+            v_orc_rec = df_rf[df_rf['mes'] == df_rf['mes'].max()].groupby(['ano', 'codigo_full'])['orcado'].last().sum()
             
             k1, k2, k3 = st.columns(3)
-            k1.metric("Orçado (Atual)", f"R$ {v_orc:,.2f}")
-            k2.metric("Realizado (Soma)", f"R$ {v_real:,.2f}")
-            k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
+            k1.metric("Orçado (Atual)", f"R$ {v_orc_rec:,.2f}")
+            k2.metric("Realizado (Soma)", f"R$ {v_real_rec:,.2f}")
+            k3.metric("Atingimento", f"{(v_real_rec/v_orc_rec*100 if v_orc_rec != 0 else 0):.1f}%")
 
-            df_g = df_rf.groupby(['ano', 'mes'])[['realizado']].sum().reset_index()
-            st.plotly_chart(go.Figure(data=[go.Bar(x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]), y=df_g['realizado'], marker_color='#2E7D32')]), use_container_width=True)
-            # FORMATAÇÃO CORRIGIDA POR COLUNA
-            st.dataframe(df_rf[['natureza', 'realizado', 'orcado']].style.format({
-                'realizado': '{:,.2f}', 'orcado': '{:,.2f}'
-            }), use_container_width=True)
+            df_g_r = df_rf.groupby(['ano', 'mes'])[['realizado']].sum().reset_index()
+            st.plotly_chart(go.Figure(data=[go.Bar(x=df_g_r['mes'].map(lambda x: MESES_NOMES[x-1]), y=df_g_r['realizado'], marker_color='#2E7D32')]), use_container_width=True)
+            st.dataframe(df_rf[['natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), use_container_width=True)
 
 # --- ABA 2: DESPESAS ---
 with tab2:
@@ -154,34 +151,56 @@ with tab2:
         if nat_sel: df_df = df_df[df_df['natureza'].isin(nat_sel)]
 
         if not df_df.empty:
-            mes_m = df_df['mes'].max()
-            v_aut = df_df[df_df['mes'] == mes_m]['cred_autorizado'].sum()
-            v_emp, v_liq, v_pag = df_df['empenhado'].sum(), df_df['liquidado'].sum(), df_df['pago'].sum()
+            v_aut_d = df_df[df_df['mes'] == df_df['mes'].max()]['cred_autorizado'].sum()
+            v_emp_d, v_liq_d, v_pag_d = df_df['empenhado'].sum(), df_df['liquidado'].sum(), df_df['pago'].sum()
 
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Créd. Autorizado", f"R$ {v_aut:,.2f}")
-            k2.metric("Empenhado", f"R$ {v_emp:,.2f}")
-            k3.metric("Liquidado", f"R$ {v_liq:,.2f}")
-            k4.metric("Pago", f"R$ {v_pag:,.2f}")
+            k1.metric("Créd. Autorizado", f"R$ {v_aut_d:,.2f}")
+            k2.metric("Empenhado", f"R$ {v_emp_d:,.2f}")
+            k3.metric("Liquidado", f"R$ {v_liq_d:,.2f}")
+            k4.metric("Pago", f"R$ {v_pag_d:,.2f}")
             
-            fig = go.Figure(data=[
-                go.Bar(name='Empenhado', x=['Total'], y=[v_emp], marker_color='#A9A9A9'),
-                go.Bar(name='Liquidado', x=['Total'], y=[v_liq], marker_color='#72A0C1'),
-                go.Bar(name='Pago', x=['Total'], y=[v_pag], marker_color='#2E7D32')
+            fig_d = go.Figure(data=[
+                go.Bar(name='Empenhado', x=['Total'], y=[v_emp_d], marker_color='#A9A9A9'),
+                go.Bar(name='Liquidado', x=['Total'], y=[v_liq_d], marker_color='#72A0C1'),
+                go.Bar(name='Pago', x=['Total'], y=[v_pag_d], marker_color='#2E7D32')
             ])
-            st.plotly_chart(fig, use_container_width=True)
-            # FORMATAÇÃO CORRIGIDA POR COLUNA
+            st.plotly_chart(fig_d, use_container_width=True)
             st.dataframe(df_df[['funcao', 'subfuncao', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
                 'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'
             }), use_container_width=True)
 
-# --- ABA 3: CONFRONTO ---
+# --- ABA 3: CONFRONTO (Corrigida) ---
 with tab3:
-    if not df_rec_inc.empty or not df_desp_inc.empty:
-        tr = df_rf['realizado'].sum() if not df_rf.empty else 0
-        tp = df_df['pago'].sum() if not df_df.empty else 0
-        te = df_df['empenhado'].sum() if not df_df.empty else 0
-        st.subheader("⚖️ Confronto do Período")
+    st.subheader("⚖️ Confronto do Período")
+    # Busca os valores calculados nas outras abas se existirem, senão usa 0
+    # Definindo variáveis locais para evitar o NameError
+    try: tr = v_real_rec
+    except: tr = 0
+    try: tp = v_pag_d
+    except: tp = 0
+    try: te = v_emp_d
+    except: te = 0
+    try: tl = v_liq_d
+    except: tl = 0
+
+    if tr > 0 or te > 0:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Receita Arrecadada", f"R$ {tr:,.2f}")
+        c2.metric("Despesa Empenhada", f"R$ {te:,.2f}")
+        c3.metric("Despesa Liquidada", f"R$ {tl:,.2f}")
+        c4.metric("Despesa Paga", f"R$ {tp:,.2f}")
+
+        st.divider()
         m1, m2 = st.columns(2)
-        m1.info(f"**Superávit Financeiro:** R$ {tr - tp:,.2f}")
-        m2.warning(f"**Superávit Orçamentário:** R$ {tr - te:,.2f}")
+        m1.info(f"**Superávit Financeiro (Receita - Pago):** \n R$ {tr - tp:,.2f}")
+        m2.warning(f"**Superávit Orçamentário (Receita - Empenhado):** \n R$ {tr - te:,.2f}")
+        
+        fig_c = go.Figure(data=[
+            go.Bar(name='Receita', x=['Total'], y=[tr], marker_color='green'),
+            go.Bar(name='Empenhado', x=['Total'], y=[te], marker_color='orange'),
+            go.Bar(name='Pago', x=['Total'], y=[tp], marker_color='red')
+        ])
+        st.plotly_chart(fig_c, use_container_width=True)
+    else:
+        st.info("Navegue pelas abas de Receita e Despesa para carregar os dados do período.")
