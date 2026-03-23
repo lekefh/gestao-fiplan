@@ -10,12 +10,7 @@ st.set_page_config(page_title="Gestão Integrada FIPLAN", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 MESES_MAPA = {"JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4, "MAIO": 5, "JUNHO": 6, "JULHO": 7, "AGOSTO": 8, "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12}
 
-st.markdown("""
-    <style>
-    [data-testid="stMetricValue"] { font-size: 1.4rem !important; font-weight: 700; }
-    [data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
-    </style>
-    """, unsafe_allow_html=True)
+st.markdown("<style>[data-testid='stMetricValue'] { font-size: 1.4rem !important; font-weight: 700; }</style>", unsafe_allow_html=True)
 
 def inicializar_banco():
     conn = sqlite3.connect(DB_NAME)
@@ -25,12 +20,11 @@ def inicializar_banco():
 
 def limpar_f(v):
     if pd.isna(v) or v == "" or v == "-": return 0.0
-    if isinstance(v, (int, float)): return float(v)
     v = str(v).replace('.', '').replace(',', '.')
     try: return float(v)
     except: return 0.0
 
-def detectar_mes_fiplan(arquivo):
+def detectar_mes(arquivo):
     try:
         df_scan = pd.read_excel(arquivo, nrows=10, header=None)
         for r in range(len(df_scan)):
@@ -51,27 +45,28 @@ with st.sidebar:
     mes_backup = st.selectbox("Mês (Backup)", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
     
     if arquivo and st.button("🚀 Processar Dados"):
-        m_final = detectar_mes_fiplan(arquivo) or mes_backup
+        m_final = detectar_mes(arquivo) or mes_backup
         conn = sqlite3.connect(DB_NAME)
         try:
             if tipo_dado == "Receita":
                 df = pd.read_excel(arquivo, skiprows=7)
                 dados = []
                 for _, row in df.iterrows():
-                    cod, nat = str(row.iloc[0]).strip(), str(row.iloc[1]).strip()
+                    cod = str(row.iloc[0]).strip()
                     if re.match(r'^\d', cod) and not cod.endswith('.0') and len(cod) >= 11:
-                        dados.append((m_final, 2026, cod, nat, limpar_f(row.iloc[3]), limpar_f(row.iloc[6]), limpar_f(row.iloc[5])))
+                        dados.append((m_final, 2026, cod, str(row.iloc[1]), limpar_f(row.iloc[3]), limpar_f(row.iloc[6]), limpar_f(row.iloc[5])))
                 conn.execute("DELETE FROM receitas WHERE mes=?", (m_final,))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?)", dados)
             else:
                 df = pd.read_excel(arquivo, skiprows=6)
                 df.columns = df.columns.str.strip().str.upper()
-                dados = []
-                # REGRA INFALÍVEL PARA FIP 616: Só pega a linha onde UG é 0 (Consolidado)
-                # Isso evita somar os detalhes repetidos que causam os "bilhões"
-                df_f = df[df['UG'].astype(str) == '0']
                 
-                for _, row in df_f.iterrows():
+                # FILTRO DE SEGURANÇA: Só pega as linhas de detalhe (Natureza que NÃO termina em 000)
+                # Isso impede de somar os subtotais e dar "bilhões"
+                df_detalhe = df[~df['NATUREZA DESPESA'].astype(str).str.endswith('000')].copy()
+                
+                dados = []
+                for _, row in df_detalhe.iterrows():
                     uo = str(row.get('UO', '')).strip()
                     if uo != "" and uo != "nan":
                         dados.append((m_final, 2026, uo, str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')), limpar_f(row.get('ORÇADO INICIAL', 0)), limpar_f(row.get('CRÉDITO AUTORIZADO', 0)), limpar_f(row.get('EMPENHADO', 0)), limpar_f(row.get('LIQUIDADO', 0)), limpar_f(row.get('PAGO', 0))))
@@ -80,7 +75,7 @@ with st.sidebar:
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
             
             conn.commit()
-            st.success(f"✅ Importado: {MESES_NOMES[m_final-1]}")
+            st.success(f"✅ Sucesso! Mês: {MESES_NOMES[m_final-1]}")
             st.rerun()
         except Exception as e: st.error(f"Erro: {e}")
         finally: conn.close()
@@ -99,12 +94,13 @@ tab1, tab2 = st.tabs(["📊 Receitas", "💸 Despesas"])
 
 with tab1:
     if not df_rec.empty:
-        ms_r = st.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="ms_r")
-        br = st.text_input("Natureza (Contém):", key="br")
+        c1, c2 = st.columns([1, 2])
+        ms_r = c1.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="ms_r")
+        br = c2.text_input("Natureza (Contém):", key="br")
         df_rf = df_rec[df_rec['mes'].isin(ms_r)]
         if br: df_rf = df_rf[df_rf['natureza'].str.contains(br, case=False, na=False)]
         st.metric("Total Realizado", f"R$ {df_rf['realizado'].sum():,.2f}")
-        st.dataframe(df_rf[['natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), width="stretch")
+        st.dataframe(df_rf[['natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), use_container_width=True)
 
 with tab2:
     if not df_desp.empty:
@@ -119,15 +115,15 @@ with tab2:
         
         if not df_f.empty:
             m_ultima = max(ms_d) if ms_d else df_desp['mes'].max()
+            # Crédito: Soma o crédito das linhas de detalhe no último mês selecionado
             v_aut = df_desp[df_desp['mes'] == m_ultima]['cred_autorizado'].sum()
-            ve, vl, vp = df_f['empenhado'].sum(), df_f['liquidado'].sum(), df_f['pago'].sum()
+            ve, vp = df_f['empenhado'].sum(), df_f['pago'].sum()
             
-            k1, k2, k3, k4 = st.columns(4)
+            k1, k2, k3 = st.columns(3)
             k1.metric("Créd. Autorizado", f"R$ {v_aut:,.2f}")
             k2.metric("Empenhado", f"R$ {ve:,.2f}")
-            k3.metric("Liquidado", f"R$ {vl:,.2f}")
-            k4.metric("Pago", f"R$ {vp:,.2f}")
+            k3.metric("Pago", f"R$ {vp:,.2f}")
             
-            st.dataframe(df_f[['programa', 'projeto', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
-                'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'
-            }), width="stretch")
+            st.dataframe(df_f[['programa', 'projeto', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'pago']].style.format({
+                'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'pago': '{:,.2f}'
+            }), use_container_width=True)
