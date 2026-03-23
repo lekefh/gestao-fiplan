@@ -44,7 +44,7 @@ with st.sidebar:
     arq = st.file_uploader("Selecionar Arquivo", type=["xlsx"])
     if arq and st.button("🚀 Processar Dados"):
         m_ref = detectar_mes(arq)
-        if not m_ref: st.error("Mês não detectado."); st.stop()
+        if not m_ref: st.error("Mês não detectado na linha 6 do arquivo."); st.stop()
         conn = sqlite3.connect(DB_NAME)
         if tipo == "Receita":
             df = pd.read_excel(arq, skiprows=7)
@@ -58,28 +58,32 @@ with st.sidebar:
         else:
             df = pd.read_excel(arq, skiprows=6)
             df.columns = df.columns.str.strip().str.upper()
-            # AGORA O SEGREDO: Pegamos o valor único por Natureza/Fonte para não somar as UGs repetidas
-            df_limpo = df.groupby(['UO','FUNÇÃO','SUBFUNÇÃO','PROGRAMA','PAOE','NATUREZA DESPESA','FONTE']).agg({
-                'ORÇADO INICIAL': 'max', 'CRÉDITO AUTORIZADO': 'max', 'EMPENHADO': 'max', 'LIQUIDADO': 'max', 'PAGO': 'max'
-            }).reset_index()
+            
+            # FILTRAGEM ANALÍTICA: Ignora UG=0 (subtotais) e ELEMENTO=0
+            df_detalhe = df[(df['UG'].astype(str) != '0') & (df['ELEMENTO'].astype(float) > 0)].copy()
             
             dados = []
-            for _, row in df_limpo.iterrows():
+            for _, row in df_detalhe.iterrows():
                 dados.append((m_ref, 2026, str(row['UO']), str(row['FUNÇÃO']), str(row['SUBFUNÇÃO']), str(row['PROGRAMA']), str(row['PAOE']), str(row['NATUREZA DESPESA']), str(row['FONTE']), limpar_f(row['ORÇADO INICIAL']), limpar_f(row['CRÉDITO AUTORIZADO']), limpar_f(row['EMPENHADO']), limpar_f(row['LIQUIDADO']), limpar_f(row['PAGO'])))
+            
             conn.execute("DELETE FROM despesas WHERE mes=?", (m_ref,))
             conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
-        conn.commit(); conn.close(); st.success(f"✅ {MESES_NOMES[m_ref-1]} Importado!"); st.rerun()
+        
+        conn.commit(); conn.close()
+        st.success(f"✅ {MESES_NOMES[m_ref-1]} importado com sucesso!")
+        st.rerun()
 
     if st.button("🔴 LIMPAR TUDO"):
         conn = sqlite3.connect(DB_NAME); conn.execute("DROP TABLE IF EXISTS receitas"); conn.execute("DROP TABLE IF EXISTS despesas")
         conn.commit(); conn.close(); inicializar_banco(); st.rerun()
 
-# --- CÁLCULO DEDUÇÃO ---
+# --- PROCESSAMENTO DOS DADOS ---
 conn = sqlite3.connect(DB_NAME)
 df_rec = pd.read_sql("SELECT * FROM receitas", conn)
 df_desp_raw = pd.read_sql("SELECT * FROM despesas", conn)
 conn.close()
 
+# Lógica de Dedução Mensal (Fev - Jan) apenas para Despesas
 def calcular_mensal(df):
     if df.empty: return df
     df = df.sort_values('mes')
@@ -96,37 +100,40 @@ def calcular_mensal(df):
 
 df_desp_mensal = calcular_mensal(df_desp_raw)
 
-# --- VISUALIZAÇÃO ---
+# --- DASHBOARD ---
 t1, t2 = st.tabs(["📊 Receitas", "💸 Despesas"])
 
 with t1:
     if not df_rec.empty:
-        ms_r = st.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
-        df_rf = df_rec[df_rec['mes'].isin(ms_r)]
+        mr = st.multiselect("Filtrar Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
+        df_rf = df_rec[df_rec['mes'].isin(mr)]
         st.metric("Total Realizado", f"R$ {df_rf['realizado'].sum():,.2f}")
-        st.dataframe(df_rf[['natureza', 'realizado', 'orcado']].style.format('{:,.2f}'), use_container_width=True)
+        st.dataframe(df_rf[['natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), use_container_width=True)
 
 with t2:
     if not df_desp_mensal.empty:
-        f1, f2, f3, f4 = st.columns(4)
-        ms_d = f1.multiselect("Meses:", sorted(df_desp_mensal['mes'].unique()), default=df_desp_mensal['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
-        ss = f2.multiselect("Subfunção:", sorted(df_desp_mensal['subfuncao'].unique()))
-        ps = f3.multiselect("Programa:", sorted(df_desp_mensal['programa'].unique()))
-        fts = f4.multiselect("Fonte:", sorted(df_desp_mensal['fonte'].unique()))
+        # Filtros
+        f1, f2, f3 = st.columns(3)
+        ms_d = f1.multiselect("Meses Selecionados:", sorted(df_desp_mensal['mes'].unique()), default=df_desp_mensal['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
+        ps = f2.multiselect("Programa:", sorted(df_desp_mensal['programa'].unique()))
+        fts = f3.multiselect("Fonte:", sorted(df_desp_mensal['fonte'].unique()))
         
         df_f = df_desp_mensal[df_desp_mensal['mes'].isin(ms_d)]
-        if ss: df_f = df_f[df_f['subfuncao'].isin(ss)]
         if ps: df_f = df_f[df_f['programa'].isin(ps)]
         if fts: df_f = df_f[df_f['fonte'].isin(fts)]
         
         if not df_f.empty:
             m_max = df_desp_raw['mes'].max()
-            # Crédito: Soma o valor máximo único do último mês
-            v_aut = df_desp_raw[df_desp_raw['mes'] == m_max].groupby(['funcao','subfuncao','programa','projeto','natureza','fonte'])['cred_autorizado'].max().sum()
+            # Crédito Autorizado: Pega a foto do último mês importado sem somar duplicidades
+            v_aut = df_desp_raw[df_desp_raw['mes'] == m_max]['cred_autorizado'].sum()
             ve, vp = df_f['empenhado'].sum(), df_f['pago'].sum()
             
             k1, k2, k3 = st.columns(3)
-            k1.metric("Créd. Autorizado", f"R$ {v_aut:,.2f}")
-            k2.metric("Empenhado", f"R$ {ve:,.2f}")
-            k3.metric("Pago", f"R$ {vp:,.2f}")
-            st.dataframe(df_f[['funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'pago']].style.format('{:,.2f}'), use_container_width=True)
+            k1.metric("Créd. Autorizado (Atual)", f"R$ {v_aut:,.2f}")
+            k2.metric("Empenhado (Filtro)", f"R$ {ve:,.2f}")
+            k3.metric("Pago (Filtro)", f"R$ {vp:,.2f}")
+            
+            # Formatação segura por coluna (evita erro na coluna de texto 'natureza')
+            st.dataframe(df_f[['funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'pago']].style.format({
+                'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'pago': '{:,.2f}'
+            }), use_container_width=True)
