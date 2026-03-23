@@ -13,16 +13,12 @@ CATEGORIAS_REC = ["Receita Tributária", "Receita Patrimonial", "Receita de Serv
 
 def inicializar_banco():
     conn = sqlite3.connect(DB_NAME)
-    # Tabela de receitas com coluna categoria
     conn.execute('''CREATE TABLE IF NOT EXISTS receitas 
         (mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT, orcado REAL, realizado REAL, previsao REAL, categoria TEXT DEFAULT 'Não Classificada')''')
-    
-    # Garantir que a coluna categoria exista (caso venha de uma versão anterior)
     try:
         conn.execute("ALTER TABLE receitas ADD COLUMN categoria TEXT DEFAULT 'Não Classificada'")
     except:
         pass
-        
     conn.execute('''CREATE TABLE IF NOT EXISTS despesas 
         (mes INTEGER, ano INTEGER, uo TEXT, funcao TEXT, subfuncao TEXT, programa TEXT, projeto TEXT, natureza TEXT, fonte TEXT, orcado_inicial REAL, cred_autorizado REAL, empenhado REAL, liquidado REAL, pago REAL)''')
     conn.close()
@@ -57,7 +53,7 @@ with st.sidebar:
     if arquivo and st.button("🚀 Processar Dados"):
         m_final = detectar_mes(arquivo)
         if not m_final:
-            st.error("Mês não detectado no arquivo."); st.stop()
+            st.error("Mês não detectado."); st.stop()
         conn = sqlite3.connect(DB_NAME)
         try:
             if tipo_dado == "Receita":
@@ -68,22 +64,18 @@ with st.sidebar:
                     # REGRA ANALÍTICA: Último dígito != 0
                     if re.match(r'^\d', cod) and cod[-1] != '0':
                         valor = limpar_f(row.iloc[6])
-                        # NOVA REGRA: 9 é dedutora, 6 soma normal
-                        if cod.startswith('9'): 
-                            valor = -abs(valor)
+                        # REGRA: 9 é dedutora
+                        if cod.startswith('9'): valor = -abs(valor)
                         
-                        # Preservar categoria se já existir
                         cur = conn.execute("SELECT categoria FROM receitas WHERE codigo_full = ?", (cod,))
                         r_cat = cur.fetchone()
                         cat_atual = r_cat[0] if r_cat else "Não Classificada"
                         
                         dados.append((m_final, 2026, cod, str(row.iloc[1]).replace('"', ''), 
                                      limpar_f(row.iloc[3]), valor, limpar_f(row.iloc[5]), cat_atual))
-                
                 conn.execute("DELETE FROM receitas WHERE mes=?", (m_final,))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?)", dados)
             else:
-                # DESPESA (Lógica mantida conforme sua aprovação)
                 df = pd.read_excel(arquivo, skiprows=6)
                 df.columns = df.columns.str.strip().str.upper()
                 dados = []
@@ -100,7 +92,7 @@ with st.sidebar:
                             dados.append((m_final, 2026, uo, str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')), v_ini, v_aut, v_emp, v_liq, v_pag))
                 conn.execute("DELETE FROM despesas WHERE mes=?", (m_final,))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
-            conn.commit(); st.success("✅ Importado com sucesso!"); st.rerun()
+            conn.commit(); st.success("✅ Importado!"); st.rerun()
         except Exception as e: st.error(f"Erro: {e}")
         finally: conn.close()
 
@@ -119,10 +111,9 @@ tab1, tab2 = st.tabs(["📊 Receitas", "💸 Despesas"])
 # --- ABA 1: RECEITAS ---
 with tab1:
     if not df_rec.empty:
-        # Painel de Classificação
         with st.expander("🏷️ Classificar Receitas por Categoria"):
             c1, c2, c3 = st.columns([2, 2, 1])
-            sel_nat = c1.selectbox("Selecione a Natureza:", sorted(df_rec['natureza'].unique()))
+            sel_nat = c1.selectbox("Natureza:", sorted(df_rec['natureza'].unique()))
             sel_cat = c2.selectbox("Atribuir Categoria:", CATEGORIAS_REC)
             if c3.button("Salvar Categoria"):
                 conn = sqlite3.connect(DB_NAME)
@@ -134,29 +125,41 @@ with tab1:
         ms_r = f1.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
         opcoes_cat = sorted(df_rec['categoria'].unique())
         cat_sel = f2.multiselect("Filtrar Categoria:", opcoes_cat, default=opcoes_cat)
-        nat_sel = f3.multiselect("Natureza (Selecionável):", sorted(df_rec['natureza'].unique()))
+        nat_sel = f3.multiselect("Natureza (Filtro Selecionável):", sorted(df_rec['natureza'].unique()))
 
         df_rf = df_rec[(df_rec['mes'].isin(ms_r)) & (df_rec['categoria'].isin(cat_sel))]
         if nat_sel: df_rf = df_rf[df_rf['natureza'].isin(nat_sel)]
         
         if not df_rf.empty:
-            k1, k2 = st.columns(2)
-            k1.metric("Líquido Arrecadado", f"R$ {df_rf['realizado'].sum():,.2f}")
-            k2.metric("Orçado Atual", f"R$ {df_rf.groupby(['codigo_full'])['orcado'].max().sum():,.2f}")
+            # MÉTRICAS
+            v_real = df_rf['realizado'].sum()
+            # Orçado consolidado (último mês selecionado para não duplicar orçamento fixo)
+            m_ultima = max(ms_r)
+            v_orc = df_rec[df_rec['mes'] == m_ultima]['orcado'].sum()
+            
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Orçado Atualizado", f"R$ {v_orc:,.2f}")
+            k2.metric("Líquido Arrecadado", f"R$ {v_real:,.2f}")
+            k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
 
-            # RESTAURAÇÃO DO GRÁFICO ORIGINAL (BARRAS VERDE)
-            df_g = df_rf.groupby(['mes'])[['realizado']].sum().reset_index()
-            fig = go.Figure(data=[go.Bar(x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]), y=df_g['realizado'], marker_color='#2E7D32')])
-            fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0), title="Realização por Mês")
+            # GRÁFICO COM LINHA DO ORÇADO
+            df_g = df_rf.groupby(['mes']).agg({'realizado':'sum', 'orcado':'sum'}).reset_index()
+            fig = go.Figure()
+            # Barras do Realizado
+            fig.add_trace(go.Bar(x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]), y=df_g['realizado'], name="Realizado", marker_color='#2E7D32'))
+            # Linha do Orçado
+            fig.add_trace(go.Scatter(x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]), y=df_g['orcado'], name="Orçado (Meta)", line=dict(color='#FF9800', width=3, dash='dot')))
+            
+            fig.update_layout(height=380, margin=dict(l=0, r=0, t=30, b=0), title="Realização vs Orçado por Mês", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
             
             st.dataframe(df_rf[['categoria', 'codigo_full', 'natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), width='stretch')
 
 with tab2:
     if not df_desp.empty:
-        # Despesa mantida conforme sua última aprovação
+        # Mantendo a lógica de despesa centavo a centavo aprovada
         f1, f2, f3 = st.columns(3)
-        ms_d = f1.multiselect("Meses:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msd")
+        ms_d = f1.multiselect("Meses Selecionados:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msd")
         ps = f2.multiselect("Programa:", sorted(df_desp['programa'].unique()))
         bd = f3.text_input("Natureza (Contém):", placeholder="Ex: 3390", key="bd_d")
         
