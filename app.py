@@ -19,6 +19,7 @@ st.markdown("<style>[data-testid='stMetricValue'] { font-size: 1.4rem !important
 # --- BANCO ---
 def inicializar_banco():
     conn = sqlite3.connect(DB_NAME)
+
     conn.execute('''CREATE TABLE IF NOT EXISTS receitas (
         mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT,
         orcado REAL, realizado REAL, previsao REAL
@@ -30,6 +31,7 @@ def inicializar_banco():
         orcado_inicial REAL, cred_autorizado REAL,
         empenhado REAL, liquidado REAL, pago REAL
     )''')
+
     conn.close()
 
 def limpar_f(v):
@@ -95,7 +97,6 @@ with st.sidebar:
             df = pd.read_excel(arq, skiprows=6)
             df.columns = df.columns.str.strip().str.upper()
 
-            # FILTRO ANALÍTICO
             df_detalhe = df[
                 (df['UG'].astype(str) != '0') &
                 (df['ELEMENTO'].astype(float) > 0)
@@ -105,13 +106,13 @@ with st.sidebar:
             for _, row in df_detalhe.iterrows():
                 dados.append((
                     m_ref, 2026,
-                    str(row['UO']),
-                    str(row['FUNÇÃO']),
-                    str(row['SUBFUNÇÃO']),
-                    str(row['PROGRAMA']),
-                    str(row['PAOE']),
-                    str(row['NATUREZA DESPESA']),
-                    str(row['FONTE']),
+                    str(row['UO']).strip(),
+                    str(row['FUNÇÃO']).strip(),
+                    str(row['SUBFUNÇÃO']).strip(),
+                    str(row['PROGRAMA']).strip(),
+                    str(row['PAOE']).strip(),
+                    str(row['NATUREZA DESPESA']).strip(),
+                    str(row['FONTE']).strip(),
                     limpar_f(row['ORÇADO INICIAL']),
                     limpar_f(row['CRÉDITO AUTORIZADO']),
                     limpar_f(row['EMPENHADO']),
@@ -144,7 +145,12 @@ df_rec = pd.read_sql("SELECT * FROM receitas", conn)
 df_desp_raw = pd.read_sql("SELECT * FROM despesas", conn)
 conn.close()
 
-# --- CÁLCULO MENSAL CORRIGIDO ---
+# --- LIMPEZA DE CHAVES (CRÍTICO) ---
+for col in ['funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte']:
+    if col in df_desp_raw.columns:
+        df_desp_raw[col] = df_desp_raw[col].astype(str).str.strip()
+
+# --- CÁLCULO MENSAL CORRETO ---
 def calcular_mensal(df):
     if df.empty:
         return df
@@ -152,13 +158,29 @@ def calcular_mensal(df):
     keys = ['funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte']
     cols = ['empenhado', 'liquidado', 'pago']
 
-    df = df.sort_values(keys + ['mes']).copy()
+    # CONSOLIDA por chave + mês
+    df_grouped = (
+        df.groupby(keys + ['mes'], as_index=False)[cols + ['cred_autorizado']]
+        .sum()
+    )
 
+    # ORDENA corretamente
+    df_grouped = df_grouped.sort_values(keys + ['mes'])
+
+    # CALCULA DIFERENÇA
     for col in cols:
-        df[col] = df.groupby(keys)[col].diff().fillna(df[col])
-        df[col] = df[col].clip(lower=0)
+        df_grouped[col] = df_grouped.groupby(keys)[col].diff()
 
-    return df
+        # primeiro mês = valor original
+        mask_primeiro = df_grouped.groupby(keys)['mes'].transform('min') == df_grouped['mes']
+        df_grouped.loc[mask_primeiro, col] = df_grouped.loc[mask_primeiro, col].fillna(
+            df_grouped.loc[mask_primeiro, col]
+        )
+
+        # segurança contra negativo
+        df_grouped[col] = df_grouped[col].clip(lower=0)
+
+    return df_grouped
 
 df_desp_mensal = calcular_mensal(df_desp_raw)
 
@@ -211,9 +233,13 @@ with t2:
 
         if not df_f.empty:
 
-            # Crédito Autorizado = snapshot do último mês importado
-            m_max = df_desp_raw['mes'].max()
-            v_aut = df_desp_raw[df_desp_raw['mes'] == m_max]['cred_autorizado'].sum()
+            # CRÉDITO AUTORIZADO (snapshot correto)
+            m_max = df_desp_raw['mes'].dropna().max()
+
+            if pd.isna(m_max):
+                v_aut = 0
+            else:
+                v_aut = df_desp_raw[df_desp_raw['mes'] == m_max]['cred_autorizado'].sum()
 
             ve = df_f['empenhado'].sum()
             vp = df_f['pago'].sum()
