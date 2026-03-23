@@ -10,7 +10,6 @@ st.set_page_config(page_title="Gestão Integrada FIPLAN", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 MESES_MAPA = {"JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4, "MAIO": 5, "JUNHO": 6, "JULHO": 7, "AGOSTO": 8, "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12}
 
-# CSS: Letras menores nos KPIs (padrão aprovado)
 st.markdown("""
     <style>
     [data-testid="stMetricValue"] { font-size: 1.4rem !important; font-weight: 700; }
@@ -32,29 +31,27 @@ def limpar_f(v):
 
 def scanner_mes_fiplan(arquivo):
     try:
-        df_scan = pd.read_excel(arquivo, nrows=15, header=None)
+        df_scan = pd.read_excel(arquivo, nrows=10, header=None)
         for r in range(len(df_scan)):
             for c in range(len(df_scan.columns)):
                 celula = str(df_scan.iloc[r, c]).upper()
-                if "MÊS DE REFERÊNCIA" in celula:
-                    for nome_mes, num_mes in MESES_MAPA.items():
-                        if nome_mes in celula: return num_mes
+                for nome_mes, num_mes in MESES_MAPA.items():
+                    if nome_mes in celula: return num_mes
     except: return None
     return None
 
 inicializar_banco()
 
-# --- SIDEBAR: IMPORTAÇÃO ---
 with st.sidebar:
     st.subheader("📥 Importar Dados")
     tipo_dado = st.radio("Tipo:", ["Receita", "Despesa"])
     arquivo = st.file_uploader(f"Arquivo {tipo_dado}", type=["xlsx"])
-    mes_manual = st.selectbox("Mês (Backup)", range(1, 13), format_func=lambda x: MESES_NOMES[x-1])
+    mes_backup = st.selectbox("Mês (Manual)", range(1, 13), format_func=lambda x: MESES_NOMES[x-1])
     ano_ref = st.number_input("Ano", value=2026)
     
     if arquivo and st.button("🚀 Processar Dados"):
         m_auto = scanner_mes_fiplan(arquivo)
-        m_final = m_auto if m_auto else mes_manual
+        m_final = m_auto if m_auto else mes_backup
         conn = sqlite3.connect(DB_NAME)
         try:
             if tipo_dado == "Receita":
@@ -62,7 +59,7 @@ with st.sidebar:
                 dados = []
                 for _, row in df.iterrows():
                     cod, nat = str(row.iloc[0]).strip(), str(row.iloc[1]).strip()
-                    if re.match(r'^\d', cod) and not cod.endswith('.0') and len(cod) >= 13:
+                    if re.match(r'^\d', cod) and not cod.endswith('.0') and len(cod) >= 11:
                         dados.append((m_final, ano_ref, cod, nat, limpar_f(row.iloc[3]), limpar_f(row.iloc[6]), limpar_f(row.iloc[5])))
                 conn.execute("DELETE FROM receitas WHERE mes=? AND ano=?", (m_final, ano_ref))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?)", dados)
@@ -72,14 +69,14 @@ with st.sidebar:
                 dados = []
                 for _, row in df.iterrows():
                     uo = str(row.get('UO', '')).strip()
-                    elem = limpar_f(row.get('ELEMENTO', 0))
-                    # BLINDAGEM: Só importa se tiver Elemento (evita duplicar com subtotais)
-                    if (uo != "" and uo != "nan") and elem != 0:
+                    ug = str(row.get('UG', '')).strip()
+                    # NOVA TRAVA: Ignora apenas se a UG for zero ou vazia (que são os subtotais do FIP616)
+                    if uo != "" and uo != "nan" and ug != "0" and ug != "":
                         dados.append((m_final, ano_ref, uo, str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')), limpar_f(row.get('ORÇADO INICIAL', 0)), limpar_f(row.get('CRÉDITO AUTORIZADO', 0)), limpar_f(row.get('EMPENHADO', 0)), limpar_f(row.get('LIQUIDADO', 0)), limpar_f(row.get('PAGO', 0))))
                 conn.execute("DELETE FROM despesas WHERE mes=? AND ano=?", (m_final, ano_ref))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
             conn.commit()
-            st.success(f"✅ Importado! Mês: {MESES_NOMES[m_final-1]}")
+            st.success(f"✅ Sucesso! Mês: {MESES_NOMES[m_final-1]}")
             st.rerun()
         except Exception as e: st.error(f"Erro: {e}")
         finally: conn.close()
@@ -130,7 +127,6 @@ with t2:
         f1, f2 = st.columns(2)
         ad, md = f1.multiselect("Anos:", sorted(dd_inc['ano'].unique()), default=dd_inc['ano'].unique(), key="ad"), f2.multiselect("Meses:", sorted(dd_inc['mes'].unique()), default=dd_inc['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="md")
         
-        # FILTROS REVISADOS (6 Filtros)
         c_f1, c_f2, c_f3 = st.columns(3)
         fs = c_f1.multiselect("Função:", sorted(dd_inc['funcao'].unique()))
         ss = c_f2.multiselect("Subfunção:", sorted(dd_inc['subfuncao'].unique()))
@@ -154,14 +150,11 @@ with t2:
             va = df_df[df_df['mes'] == mm]['cred_autorizado'].sum()
             ve, vl, vp = df_df['empenhado'].sum(), df_df['liquidado'].sum(), df_df['pago'].sum()
             
-            # Índices sobre o total da seleção
-            df_df['% s/ Empenho'] = (df_df['empenhado'] / ve * 100).fillna(0)
-            
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("Créd. Autorizado", f"R$ {va:,.2f}"); k2.metric("Empenhado", f"R$ {ve:,.2f}"); k3.metric("Liquidado", f"R$ {vl:,.2f}"); k4.metric("Pago", f"R$ {vp:,.2f}")
             fig = go.Figure(data=[go.Bar(name='Empenhado', x=['Total'], y=[ve], marker_color='#A9A9A9'), go.Bar(name='Liquidado', x=['Total'], y=[vl], marker_color='#72A0C1'), go.Bar(name='Pago', x=['Total'], y=[vp], marker_color='#2E7D32')])
             st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(df_df[['funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', '% s/ Empenho', 'liquidado', 'pago']].style.format({'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}', '% s/ Empenho': '{:.2f}%'}), use_container_width=True)
+            st.dataframe(df_df[['funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'}), use_container_width=True)
 
 with t3:
     st.subheader("⚖️ Confronto")
