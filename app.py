@@ -48,7 +48,7 @@ with st.sidebar:
     st.subheader("📥 Importar Dados")
     tipo_dado = st.radio("Tipo:", ["Receita", "Despesa"])
     arquivo = st.file_uploader(f"Arquivo {tipo_dado}", type=["xlsx"])
-    mes_backup = st.selectbox("Mês (Backup)", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
+    mes_backup = st.selectbox("Mês (Manual)", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
     ano_ref = st.number_input("Ano", value=2026)
     
     if arquivo and st.button("🚀 Processar Dados"):
@@ -70,9 +70,11 @@ with st.sidebar:
                 df.columns = df.columns.str.strip().str.upper()
                 dados = []
                 for _, row in df.iterrows():
-                    uo, ug = str(row.get('UO', '')).strip(), str(row.get('UG', '')).strip()
-                    # REGRA DE OURO: Ignora UG=0 (subtotal) para não duplicar valores
-                    if uo != "" and uo != "nan" and ug != "0" and ug != "":
+                    uo = str(row.get('UO', '')).strip()
+                    # A TRAVA DEFINITIVA: Só importa se ELEMENTO for > 0. 
+                    # Isso descarta automaticamente todas as linhas de subtotais e totais do FIP 616.
+                    elemento = limpar_f(row.get('ELEMENTO', 0))
+                    if uo != "" and uo != "nan" and elemento > 0:
                         dados.append((m_final, ano_ref, uo, str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')), limpar_f(row.get('ORÇADO INICIAL', 0)), limpar_f(row.get('CRÉDITO AUTORIZADO', 0)), limpar_f(row.get('EMPENHADO', 0)), limpar_f(row.get('LIQUIDADO', 0)), limpar_f(row.get('PAGO', 0))))
                 conn.execute("DELETE FROM despesas WHERE mes=? AND ano=?", (m_final, ano_ref))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
@@ -87,11 +89,11 @@ with st.sidebar:
 
 # --- CARGA ---
 conn = sqlite3.connect(DB_NAME)
-df_rec = pd.read_sql("SELECT * FROM receitas", conn) # RECEITA PURA
+df_rec = pd.read_sql("SELECT * FROM receitas", conn) 
 df_desp_raw = pd.read_sql("SELECT * FROM despesas", conn)
 conn.close()
 
-# LÓGICA DE DEDUÇÃO (APENAS PARA DESPESAS)
+# Lógica de Dedução Mensal (Exclusiva para Despesas)
 def calcular_mensal_desp(df):
     if df.empty: return df
     df = df.sort_values(by=['mes'])
@@ -110,26 +112,23 @@ df_desp = calcular_mensal_desp(df_desp_raw)
 
 tab1, tab2, tab3 = st.tabs(["📊 Receitas", "💸 Despesas", "⚖️ Confronto"])
 
-# ABA 1: RECEITAS (RESTAURADA ORIGINAL)
+# --- ABA 1: RECEITAS (Simples e Verde) ---
 with tab1:
     if not df_rec.empty:
-        c1, c2 = st.columns(2)
-        ar, mr = c1.multiselect("Anos:", sorted(df_rec['ano'].unique()), default=df_rec['ano'].unique()), c2.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
-        df_rf = df_rec[(df_rec['ano'].isin(ar)) & (df_rec['mes'].isin(mr))]
+        mr = st.multiselect("Filtrar Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
+        df_rf = df_rec[df_rec['mes'].isin(mr)]
         if not df_rf.empty:
-            vr = df_rf['realizado'].sum()
-            st.metric("Total Realizado", f"R$ {vr:,.2f}")
-            fig = go.Figure(data=[go.Bar(x=df_rf['mes'].map(lambda x: MESES_NOMES[x-1]), y=df_rf['realizado'], marker_color='#2E7D32')])
-            st.plotly_chart(fig, use_container_width=True)
+            st.metric("Receita Realizada", f"R$ {df_rf['realizado'].sum():,.2f}")
+            st.plotly_chart(go.Figure(data=[go.Bar(x=df_rf['mes'].map(lambda x: MESES_NOMES[x-1]), y=df_rf['realizado'], marker_color='#2E7D32')]), use_container_width=True)
             st.dataframe(df_rf[['natureza', 'realizado', 'orcado']].style.format('{:,.2f}'), use_container_width=True)
 
-# ABA 2: DESPESAS (COM TODOS OS FILTROS)
+# --- ABA 2: DESPESAS (Com Dedução e Filtros) ---
 with tab2:
     if not df_desp.empty:
+        # Filtros de Seleção
         f1, f2, f3 = st.columns(3)
         ms = f1.multiselect("Meses:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
         fs, ss = f2.multiselect("Função:", sorted(df_desp['funcao'].unique())), f3.multiselect("Subfunção:", sorted(df_desp['subfuncao'].unique()))
-        
         f4, f5, f6 = st.columns(3)
         ps, fts, ns = f4.multiselect("Programa:", sorted(df_desp['programa'].unique())), f5.multiselect("Fonte:", sorted(df_desp['fonte'].unique())), f6.multiselect("Natureza:", sorted(df_desp['natureza'].unique()))
         
@@ -142,13 +141,15 @@ with tab2:
         
         if not df_f.empty:
             m_max = df_desp_raw['mes'].max()
-            v_aut = df_desp_raw[df_desp_raw['mes'] == m_max]['cred_autorizado'].sum()
+            # Crédito: Pega o máximo por linha no último mês para evitar somar duplicados
+            v_aut = df_desp_raw[df_desp_raw['mes'] == m_max].groupby(['uo', 'natureza', 'fonte'])['cred_autorizado'].max().sum()
             ve, vl, vp = df_f['empenhado'].sum(), df_f['liquidado'].sum(), df_f['pago'].sum()
+            
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Créd. Autorizado", f"R$ {v_aut:,.2f}")
-            k2.metric("Empenhado", f"R$ {ve:,.2f}")
-            k3.metric("Liquidado", f"R$ {vl:,.2f}")
-            k4.metric("Pago", f"R$ {vp:,.2f}")
+            k1.metric("Créd. Autorizado (Atual)", f"R$ {v_aut:,.2f}")
+            k2.metric("Empenhado (Filtro)", f"R$ {ve:,.2f}")
+            k3.metric("Liquidado (Filtro)", f"R$ {vl:,.2f}")
+            k4.metric("Pago (Filtro)", f"R$ {vp:,.2f}")
             st.dataframe(df_f[['funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
                 'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'
             }), use_container_width=True)
