@@ -8,10 +8,7 @@ import re
 DB_NAME = 'dados_gestao_integrada.db'
 st.set_page_config(page_title="Gestão Integrada FIPLAN", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
-MESES_MAPA = {
-    "JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4, "MAIO": 5, "JUNHO": 6,
-    "JULHO": 7, "AGOSTO": 8, "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12
-}
+MESES_MAPA = {"JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4, "MAIO": 5, "JUNHO": 6, "JULHO": 7, "AGOSTO": 8, "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12}
 
 st.markdown("""
     <style>
@@ -28,7 +25,7 @@ def inicializar_banco():
 
 def limpar_f(v):
     if pd.isna(v) or v == "" or v == "-": return 0.0
-    if isinstance(v, str): v = str(v).replace('.', '').replace(',', '.')
+    v = str(v).replace('.', '').replace(',', '.')
     try: return float(v)
     except: return 0.0
 
@@ -46,7 +43,7 @@ def detectar_mes_fiplan(arquivo):
 
 inicializar_banco()
 
-# --- SIDEBAR: IMPORTAÇÃO ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.subheader("📥 Importar Dados")
     tipo_dado = st.radio("Tipo:", ["Receita", "Despesa"])
@@ -73,20 +70,13 @@ with st.sidebar:
                 df.columns = df.columns.str.strip().str.upper()
                 dados = []
                 for _, row in df.iterrows():
-                    uo = str(row.get('UO', '')).strip()
-                    ug = str(row.get('UG', '')).strip()
-                    # Blindagem: Ignora subtotais (UG=0) para não duplicar valores na soma
+                    uo, ug = str(row.get('UO', '')).strip(), str(row.get('UG', '')).strip()
                     if uo != "" and uo != "nan" and ug != "0" and ug != "":
-                        dados.append((mes_final, ano_ref, uo, str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), 
-                                     str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), 
-                                     str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')),
-                                     limpar_f(row.get('ORÇADO INICIAL', 0)), limpar_f(row.get('CRÉDITO AUTORIZADO', 0)), 
-                                     limpar_f(row.get('EMPENHADO', 0)), limpar_f(row.get('LIQUIDADO', 0)), limpar_f(row.get('PAGO', 0))))
+                        dados.append((mes_final, ano_ref, uo, str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')), limpar_f(row.get('ORÇADO INICIAL', 0)), limpar_f(row.get('CRÉDITO AUTORIZADO', 0)), limpar_f(row.get('EMPENHADO', 0)), limpar_f(row.get('LIQUIDADO', 0)), limpar_f(row.get('PAGO', 0))))
                 conn.execute("DELETE FROM despesas WHERE mes=? AND ano=?", (mes_final, ano_ref))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
             conn.commit()
-            st.success(f"✅ Importado: {MESES_NOMES[mes_final-1]}")
-            st.rerun()
+            st.success(f"✅ Importado: {MESES_NOMES[mes_final-1]}"); st.rerun()
         except Exception as e: st.error(f"Erro: {e}")
         finally: conn.close()
 
@@ -94,33 +84,25 @@ with st.sidebar:
         conn = sqlite3.connect(DB_NAME); conn.execute("DROP TABLE IF EXISTS receitas"); conn.execute("DROP TABLE IF EXISTS despesas")
         conn.commit(); conn.close(); inicializar_banco(); st.rerun()
 
-# --- CARGA E LÓGICA DE DEDUÇÃO ---
+# --- LÓGICA DE DEDUÇÃO ---
 conn = sqlite3.connect(DB_NAME)
 df_rec_raw = pd.read_sql("SELECT * FROM receitas", conn)
 df_desp_raw = pd.read_sql("SELECT * FROM despesas", conn)
 conn.close()
 
-# Função para transformar acumulado em mensal (Dedução)
-def calcular_mensal(df, colunas_valor):
+def calcular_mensal(df, cols):
     if df.empty: return df
     df = df.sort_values(by=['mes'])
-    # Chave de identificação única da linha
-    chaves = ['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte'] if 'uo' in df.columns else ['codigo_full']
-    df_mensal = df.copy()
-    
-    for mes in sorted(df['mes'].unique(), reverse=True):
-        if mes > df['mes'].min():
-            for _, grupo in df.groupby(chaves):
-                idx_atual = grupo[grupo['mes'] == mes].index
-                idx_anterior = grupo[grupo['mes'] < mes].sort_values('mes', ascending=False).head(1).index
-                
-                if not idx_atual.empty and not idx_anterior.empty:
-                    for col in colunas_valor:
-                        valor_mes = df.loc[idx_atual[0], col] - df.loc[idx_anterior[0], col]
-                        df_mensal.loc[idx_atual[0], col] = max(0, valor_mes)
-    return df_mensal
+    keys = ['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte'] if 'uo' in df.columns else ['codigo_full']
+    res = df.copy()
+    for m in sorted(df['mes'].unique(), reverse=True):
+        if m > df['mes'].min():
+            for _, g in df.groupby(keys):
+                idx_at, idx_ant = g[g['mes'] == m].index, g[g['mes'] < m].sort_values('mes', ascending=False).head(1).index
+                if not idx_at.empty and not idx_ant.empty:
+                    for c in cols: res.loc[idx_at[0], c] = max(0, df.loc[idx_at[0], c] - df.loc[idx_ant[0], c])
+    return res
 
-# Aplicando a dedução
 df_rec = calcular_mensal(df_rec_raw, ['realizado'])
 df_desp = calcular_mensal(df_desp_raw, ['empenhado', 'liquidado', 'pago'])
 
@@ -128,24 +110,36 @@ tab1, tab2, tab3 = st.tabs(["📊 Receitas", "💸 Despesas", "⚖️ Confronto"
 
 with tab2:
     if not df_desp.empty:
-        f1, f2 = st.columns(2)
-        meses_sel = f1.multiselect("Meses Selecionados:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
+        # --- FILTROS RESTAURADOS ---
+        f1, f2, f3 = st.columns(3)
+        ms = f1.multiselect("Meses:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
+        fs = f2.multiselect("Função:", sorted(df_desp['funcao'].unique()))
+        ss = f3.multiselect("Subfunção:", sorted(df_desp['subfuncao'].unique()))
         
-        df_f = df_desp[df_desp['mes'].isin(meses_sel)]
+        f4, f5, f6 = st.columns(3)
+        ps = f4.multiselect("Programa:", sorted(df_desp['programa'].unique()))
+        fts = f5.multiselect("Fonte:", sorted(df_desp['fonte'].unique()))
+        ns = f6.multiselect("Natureza:", sorted(df_desp['natureza'].unique()))
+        
+        df_f = df_desp[df_desp['mes'].isin(ms)]
+        if fs: df_f = df_f[df_f['funcao'].isin(fs)]
+        if ss: df_f = df_f[df_f['subfuncao'].isin(ss)]
+        if ps: df_f = df_f[df_f['programa'].isin(ps)]
+        if fts: df_f = df_f[df_f['fonte'].isin(fts)]
+        if ns: df_f = df_f[df_f['natureza'].isin(ns)]
         
         if not df_f.empty:
-            # Lógica Cred. Autorizado: Pega sempre o valor do último mês disponível no banco para aquela linha
-            mes_max = df_desp['mes'].max()
-            v_autorizado = df_desp_raw[df_desp_raw['mes'] == mes_max]['cred_autorizado'].sum()
-            
-            v_emp = df_f['empenhado'].sum()
-            v_liq = df_f['liquidado'].sum()
-            v_pag = df_f['pago'].sum()
+            m_max = df_desp_raw['mes'].max()
+            v_aut = df_desp_raw[df_desp_raw['mes'] == m_max]['cred_autorizado'].sum()
+            v_emp, v_liq, v_pag = df_f['empenhado'].sum(), df_f['liquidado'].sum(), df_f['pago'].sum()
 
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Créd. Autorizado (Atual)", f"R$ {v_autorizado:,.2f}")
-            k2.metric("Empenhado (No Filtro)", f"R$ {v_emp:,.2f}")
-            k3.metric("Liquidado (No Filtro)", f"R$ {v_liq:,.2f}")
-            k4.metric("Pago (No Filtro)", f"R$ {v_pag:,.2f}")
+            k1.metric("Créd. Autorizado (Atual)", f"R$ {v_aut:,.2f}")
+            k2.metric("Empenhado (Filtro)", f"R$ {v_emp:,.2f}")
+            k3.metric("Liquidado (Filtro)", f"R$ {v_liq:,.2f}")
+            k4.metric("Pago (Filtro)", f"R$ {v_pag:,.2f}")
 
-            st.dataframe(df_f[['natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format('{:,.2f}'), use_container_width=True)
+            # FORMATAÇÃO SEGURA: Apenas colunas numéricas
+            st.dataframe(df_f[['funcao', 'subfuncao', 'programa', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
+                'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'
+            }), use_container_width=True)
