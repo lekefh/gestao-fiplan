@@ -64,7 +64,8 @@ with st.sidebar:
                 df.columns = df.columns.str.strip().str.upper()
                 
                 # IMPORTAÇÃO INTELIGENTE FIP 616:
-                # Armazenamos os valores ACUMULADOS diretamente do relatório
+                # 1. Pegamos a execução (Empenhado/Liq/Pag) das linhas de detalhe (UG != 0)
+                # 2. Pegamos o Crédito de onde ele estiver disponível
                 dados = []
                 for _, row in df.iterrows():
                     uo = str(row.get('UO', '')).strip()
@@ -72,12 +73,12 @@ with st.sidebar:
                         ug = str(row.get('UG', '')).strip()
                         elem = limpar_f(row.get('ELEMENTO', 0))
                         
-                        # Valores de execução acumulados (vêm do relatório)
+                        # Valores de execução só vêm do detalhe analítico
                         v_emp = limpar_f(row.get('EMPENHADO', 0)) if (ug != '0' and elem != 0) else 0.0
                         v_liq = limpar_f(row.get('LIQUIDADO', 0)) if (ug != '0' and elem != 0) else 0.0
                         v_pag = limpar_f(row.get('PAGO', 0)) if (ug != '0' and elem != 0) else 0.0
                         
-                        # Crédito e Orçado Inicial
+                        # Crédito e Orçado Inicial vêm de qualquer linha (usaremos o máximo depois para consolidar)
                         v_aut = limpar_f(row.get('CRÉDITO AUTORIZADO', 0))
                         v_ini = limpar_f(row.get('ORÇADO INICIAL', 0))
 
@@ -111,8 +112,7 @@ with tab2:
     if not df_desp.empty:
         # FILTROS
         f1, f2, f3 = st.columns(3)
-        meses_disponiveis = sorted(df_desp['mes'].unique())
-        ms_d = f1.multiselect("Meses:", meses_disponiveis, default=meses_disponiveis, format_func=lambda x: MESES_NOMES[x-1], key="msd")
+        ms_d = f1.multiselect("Meses:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msd")
         ss = f2.multiselect("Subfunção:", sorted(df_desp['subfuncao'].unique()))
         ps = f3.multiselect("Programa:", sorted(df_desp['programa'].unique()))
 
@@ -121,7 +121,6 @@ with tab2:
         fts = f5.multiselect("Fonte:", sorted(df_desp['fonte'].unique()))
         bd = f6.text_input("Natureza (Contém):", placeholder="Ex: 3390", key="bd")
         
-        # Aplicar filtros básicos
         df_f = df_desp[df_desp['mes'].isin(ms_d)]
         if ss: df_f = df_f[df_f['subfuncao'].isin(ss)]
         if ps: df_f = df_f[df_f['programa'].isin(ps)]
@@ -130,88 +129,13 @@ with tab2:
         if bd: df_f = df_f[df_f['natureza'].str.contains(bd, case=False, na=False)]
         
         if not df_f.empty:
-            # Função para calcular valores mensais a partir dos acumulados
-            def calcular_valores_mensais(df, coluna_valor):
-                """
-                Converte valores acumulados em valores mensais.
-                Para cada combinação de chaves (uo, funcao, subfuncao, programa, projeto, natureza, fonte),
-                calcula a diferença entre o valor do mês atual e o mês anterior.
-                """
-                # Agrupar por todas as dimensões exceto mês
-                colunas_chave = ['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte']
-                
-                # Ordenar por mês
-                df_ordenado = df.sort_values('mes')
-                
-                # Calcular valores mensais
-                valores_mensais = []
-                
-                for (chave), grupo in df_ordenado.groupby(colunas_chave):
-                    grupo = grupo.sort_values('mes')
-                    meses_grupo = grupo['mes'].tolist()
-                    valores_acumulados = grupo[coluna_valor].tolist()
-                    
-                    # Primeiro mês: o valor mensal é igual ao acumulado
-                    valores_mensais_grupo = [valores_acumulados[0]]
-                    
-                    # Para os demais meses: valor mensal = acumulado atual - acumulado anterior
-                    for i in range(1, len(valores_acumulados)):
-                        valor_mensal = max(0, valores_acumulados[i] - valores_acumulados[i-1])
-                        valores_mensais_grupo.append(valor_mensal)
-                    
-                    # Adicionar ao resultado
-                    for idx, row in grupo.iterrows():
-                        posicao = meses_grupo.index(row['mes'])
-                        valores_mensais.append(valores_mensais_grupo[posicao])
-                
-                return valores_mensais
+            m_max = df_f['mes'].max()
+            # CRÉDITO: Agrupamos para pegar o valor máximo por categoria do último mês selecionado
+            # Isso garante que ele não zere e nem duplique.
+            df_credito = df_desp[df_desp['mes'] == m_max]
+            v_aut = df_credito.groupby(['uo','funcao','subfuncao','programa','projeto','natureza','fonte'])['cred_autorizado'].max().sum()
             
-            # Calcular valores mensais para empenhado, liquidado e pago
-            # Para o crédito autorizado, mantemos o valor do último mês selecionado
-            m_max = max(ms_d) if ms_d else df_f['mes'].max()
-            
-            # Criar uma cópia do dataframe para trabalhar
-            df_trabalho = df_f.copy()
-            
-            # Calcular valores mensais para as colunas de execução
-            df_trabalho['empenhado_mensal'] = calcular_valores_mensais(df_f, 'empenhado')
-            df_trabalho['liquidado_mensal'] = calcular_valores_mensais(df_f, 'liquidado')
-            df_trabalho['pago_mensal'] = calcular_valores_mensais(df_f, 'pago')
-            
-            # Para o crédito autorizado, usamos o valor do último mês do filtro
-            df_credito = df_f[df_f['mes'] == m_max].copy()
-            # Agrupar crédito por dimensões e pegar o máximo
-            colunas_credito = ['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte']
-            df_credito_agrupado = df_credito.groupby(colunas_credito)['cred_autorizado'].max().reset_index()
-            
-            # Criar um dicionário para mapear crédito por combinação de chaves
-            credito_dict = {}
-            for _, row in df_credito_agrupado.iterrows():
-                chave = tuple(row[colunas_credito])
-                credito_dict[chave] = row['cred_autorizado']
-            
-            # Adicionar crédito ao dataframe de trabalho
-            def get_credito(row):
-                chave = tuple(row[colunas_credito])
-                return credito_dict.get(chave, 0)
-            
-            df_trabalho['cred_autorizado_mensal'] = df_trabalho.apply(get_credito, axis=1)
-            
-            # Agregar apenas os valores mensais para o resumo (considerando apenas um registro por mês por combinação)
-            # Para evitar duplicação, agrupamos novamente
-            colunas_agrupamento = colunas_credito + ['mes']
-            df_resumo = df_trabalho.groupby(colunas_agrupamento).agg({
-                'empenhado_mensal': 'sum',
-                'liquidado_mensal': 'sum',
-                'pago_mensal': 'sum',
-                'cred_autorizado_mensal': 'max'  # Crédito é o mesmo para todos os meses, pega o máximo
-            }).reset_index()
-            
-            # Soma total para os KPI
-            v_aut = df_resumo['cred_autorizado_mensal'].sum()
-            ve = df_resumo['empenhado_mensal'].sum()
-            vl = df_resumo['liquidado_mensal'].sum()
-            vp = df_resumo['pago_mensal'].sum()
+            ve, vl, vp = df_f['empenhado'].sum(), df_f['liquidado'].sum(), df_f['pago'].sum()
             
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("Créd. Autorizado", f"R$ {v_aut:,.2f}")
@@ -219,27 +143,6 @@ with tab2:
             k3.metric("Liquidado", f"R$ {vl:,.2f}")
             k4.metric("Pago", f"R$ {vp:,.2f}")
             
-            # Preparar dataframe para exibição
-            df_exibicao = df_resumo.copy()
-            df_exibicao = df_exibicao.rename(columns={
-                'empenhado_mensal': 'empenhado',
-                'liquidado_mensal': 'liquidado',
-                'pago_mensal': 'pago',
-                'cred_autorizado_mensal': 'cred_autorizado'
-            })
-            
-            # Ordenar por mês para melhor visualização
-            df_exibicao = df_exibicao.sort_values('mes')
-            
-            st.dataframe(df_exibicao[['mes', 'funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza', 
-                                      'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
-                'cred_autorizado': '{:,.2f}', 
-                'empenhado': '{:,.2f}', 
-                'liquidado': '{:,.2f}', 
-                'pago': '{:,.2f}'
-            }).format({'mes': lambda x: MESES_NOMES[x-1]}), width='stretch')
-            
-        else:
-            st.warning("Nenhum dado encontrado com os filtros selecionados.")
-    else:
-        st.info("Nenhum dado de despesa importado ainda.")
+            st.dataframe(df_f[['funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
+                'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'
+            }), width='stretch')
