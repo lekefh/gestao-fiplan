@@ -10,7 +10,6 @@ st.set_page_config(page_title="Gestão Integrada FIPLAN", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 MESES_MAPA = {"JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4, "MAIO": 5, "JUNHO": 6, "JULHO": 7, "AGOSTO": 8, "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12}
 
-# CSS: Letras menores nos KPIs
 st.markdown("""
     <style>
     [data-testid="stMetricValue"] { font-size: 1.4rem !important; font-weight: 700; }
@@ -43,7 +42,6 @@ def scanner_mes_fiplan(arquivo):
 
 inicializar_banco()
 
-# --- SIDEBAR: IMPORTAÇÃO ---
 with st.sidebar:
     st.subheader("📥 Importar Dados")
     tipo_dado = st.radio("Tipo:", ["Receita", "Despesa"])
@@ -71,14 +69,28 @@ with st.sidebar:
                 dados = []
                 for _, row in df.iterrows():
                     uo = str(row.get('UO', '')).strip()
-                    ug_val = limpar_f(row.get('UG', 0))
-                    # FILTRO CRÍTICO: No FIP616, UG=0 são subtotais. UG > 0 são detalhes.
-                    if uo != "" and uo != "nan" and ug_val > 0:
-                        dados.append((m_final, ano_ref, uo, str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')), limpar_f(row.get('ORÇADO INICIAL', 0)), limpar_f(row.get('CRÉDITO AUTORIZADO', 0)), limpar_f(row.get('EMPENHADO', 0)), limpar_f(row.get('LIQUIDADO', 0)), limpar_f(row.get('PAGO', 0))))
+                    ug = str(row.get('UG', '')).strip()
+                    elemento = int(limpar_f(row.get('ELEMENTO', 0)))
+                    
+                    # REGRA FIP 616: Se elemento for 0, é subtotal. Só importamos se houver orçamento
+                    # mas o empenhado/liquidado/pago deve vir apenas das linhas analíticas (elemento != 0)
+                    if uo != "" and uo != "nan":
+                        v_emp = limpar_f(row.get('EMPENHADO', 0)) if elemento != 0 else 0.0
+                        v_liq = limpar_f(row.get('LIQUIDADO', 0)) if elemento != 0 else 0.0
+                        v_pag = limpar_f(row.get('PAGO', 0)) if elemento != 0 else 0.0
+                        v_aut = limpar_f(row.get('CRÉDITO AUTORIZADO', 0))
+                        
+                        # Importamos o Crédito de todas as linhas (o banco tratará o valor máximo depois)
+                        if v_aut > 0 or v_emp > 0 or v_liq > 0 or v_pag > 0:
+                            dados.append((m_final, ano_ref, uo, str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), 
+                                         str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), 
+                                         str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')), 
+                                         limpar_f(row.get('ORÇADO INICIAL', 0)), v_aut, v_emp, v_liq, v_pag))
+                
                 conn.execute("DELETE FROM despesas WHERE mes=? AND ano=?", (m_final, ano_ref))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
             conn.commit()
-            st.success(f"✅ Importado! Mês: {MESES_NOMES[m_final-1]}")
+            st.success(f"✅ Sucesso! Mês: {MESES_NOMES[m_final-1]}")
             st.rerun()
         except Exception as e: st.error(f"Erro: {e}")
         finally: conn.close()
@@ -149,8 +161,10 @@ with t2:
         
         if not df_df.empty:
             mm = df_df['mes'].max()
-            va = df_df[df_df['mes'] == mm]['cred_autorizado'].sum()
+            # Crédito: pegamos o máximo por categoria no último mês para não duplicar
+            va = df_df[df_df['mes'] == mm].groupby(['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte'])['cred_autorizado'].max().sum()
             ve, vl, vp = df_df['empenhado'].sum(), df_df['liquidado'].sum(), df_df['pago'].sum()
+            
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("Créd. Autorizado", f"R$ {va:,.2f}"); k2.metric("Empenhado", f"R$ {ve:,.2f}"); k3.metric("Liquidado", f"R$ {vl:,.2f}"); k4.metric("Pago", f"R$ {vp:,.2f}")
             fig = go.Figure(data=[go.Bar(name='Empenhado', x=['Total'], y=[ve], marker_color='#A9A9A9'), go.Bar(name='Liquidado', x=['Total'], y=[vl], marker_color='#72A0C1'), go.Bar(name='Pago', x=['Total'], y=[vp], marker_color='#2E7D32')])
