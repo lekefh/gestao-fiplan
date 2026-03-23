@@ -122,13 +122,25 @@ with t2:
     if not dd_inc.empty:
         f1, f2 = st.columns(2)
         ad, md = f1.multiselect("Anos:", sorted(dd_inc['ano'].unique()), default=dd_inc['ano'].unique(), key="ad"), f2.multiselect("Meses:", sorted(dd_inc['mes'].unique()), default=dd_inc['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="md")
-        f3, f4, f5, f6 = st.columns(4)
-        fs, ss, ps, ns = f3.multiselect("Função:", sorted(dd_inc['funcao'].unique())), f4.multiselect("Subfunção:", sorted(dd_inc['subfuncao'].unique())), f5.multiselect("Fonte:", sorted(dd_inc['fonte'].unique())), f6.multiselect("Natureza:", sorted(dd_inc['natureza'].unique()))
+        # FILTROS RESTAURADOS
+        f3, f4, f5 = st.columns(3)
+        fs = f3.multiselect("Função:", sorted(dd_inc['funcao'].unique()))
+        ss = f4.multiselect("Subfunção:", sorted(dd_inc['subfuncao'].unique()))
+        ps = f5.multiselect("Programa:", sorted(dd_inc['programa'].unique()))
+        
+        f7, f8, f9 = st.columns(3)
+        pjs = f7.multiselect("Projeto/PAOE:", sorted(dd_inc['projeto'].unique()))
+        fts = f8.multiselect("Fonte:", sorted(dd_inc['fonte'].unique()))
+        ns = f9.multiselect("Natureza:", sorted(dd_inc['natureza'].unique()))
+        
         df_df = dd_inc[(dd_inc['ano'].isin(ad)) & (dd_inc['mes'].isin(md))]
         if fs: df_df = df_df[df_df['funcao'].isin(fs)]
         if ss: df_df = df_df[df_df['subfuncao'].isin(ss)]
-        if ps: df_df = df_df[df_df['fonte'].isin(ps)]
+        if ps: df_df = df_df[df_df['programa'].isin(ps)]
+        if pjs: df_df = df_df[df_df['projeto'].isin(pjs)]
+        if fts: df_df = df_df[df_df['fonte'].isin(fts)]
         if ns: df_df = df_df[df_df['natureza'].isin(ns)]
+        
         if not df_df.empty:
             mm = df_df['mes'].max()
             va = df_df[df_df['mes'] == mm]['cred_autorizado'].sum()
@@ -137,7 +149,7 @@ with t2:
             k1.metric("Créd. Autorizado", f"R$ {va:,.2f}"); k2.metric("Empenhado", f"R$ {ve:,.2f}"); k3.metric("Liquidado", f"R$ {vl:,.2f}"); k4.metric("Pago", f"R$ {vp:,.2f}")
             fig = go.Figure(data=[go.Bar(name='Empenhado', x=['Total'], y=[ve], marker_color='#A9A9A9'), go.Bar(name='Liquidado', x=['Total'], y=[vl], marker_color='#72A0C1'), go.Bar(name='Pago', x=['Total'], y=[vp], marker_color='#2E7D32')])
             st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(df_df[['funcao', 'subfuncao', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'}), use_container_width=True)
+            st.dataframe(df_df[['funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'}), use_container_width=True)
 
 with t3:
     st.subheader("⚖️ Confronto do Período")
