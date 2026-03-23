@@ -46,7 +46,7 @@ with st.sidebar:
     if arquivo and st.button("🚀 Processar Dados"):
         m_final = detectar_mes(arquivo)
         if not m_final:
-            st.error("Mês não detetado no cabeçalho.")
+            st.error("Mês não detectado no cabeçalho.")
             st.stop()
         conn = sqlite3.connect(DB_NAME)
         try:
@@ -63,19 +63,33 @@ with st.sidebar:
                 df = pd.read_excel(arquivo, skiprows=6)
                 df.columns = df.columns.str.strip().str.upper()
                 
-                # REGRA FINAL FIP 616: Só importa se ELEMENTO != 0 e UG != 0
-                # Isto garante que pegamos apenas o detalhe real e não os subtotais
-                df_detalhe = df[(df['ELEMENTO'].astype(float) != 0) & (df['UG'].astype(str) != '0')].copy()
-                
+                # IMPORTAÇÃO INTELIGENTE FIP 616:
+                # 1. Pegamos a execução (Empenhado/Liq/Pag) das linhas de detalhe (UG != 0)
+                # 2. Pegamos o Crédito de onde ele estiver disponível
                 dados = []
-                for _, row in df_detalhe.iterrows():
-                    dados.append((m_final, 2026, str(row.get('UO')), str(row.get('FUNÇÃO')), str(row.get('SUBFUNÇÃO')), 
-                                 str(row.get('PROGRAMA')), str(row.get('PAOE')), str(row.get('NATUREZA DESPESA')), 
-                                 str(row.get('FONTE')), limpar_f(row.get('ORÇADO INICIAL')), 
-                                 limpar_f(row.get('CRÉDITO AUTORIZADO')), limpar_f(row.get('EMPENHADO')), 
-                                 limpar_f(row.get('LIQUIDADO')), limpar_f(row.get('PAGO'))))
+                for _, row in df.iterrows():
+                    uo = str(row.get('UO', '')).strip()
+                    if uo != "" and uo != "nan":
+                        ug = str(row.get('UG', '')).strip()
+                        elem = limpar_f(row.get('ELEMENTO', 0))
+                        
+                        # Valores de execução só vêm do detalhe analítico
+                        v_emp = limpar_f(row.get('EMPENHADO', 0)) if (ug != '0' and elem != 0) else 0.0
+                        v_liq = limpar_f(row.get('LIQUIDADO', 0)) if (ug != '0' and elem != 0) else 0.0
+                        v_pag = limpar_f(row.get('PAGO', 0)) if (ug != '0' and elem != 0) else 0.0
+                        
+                        # Crédito e Orçado Inicial vêm de qualquer linha (usaremos o máximo depois para consolidar)
+                        v_aut = limpar_f(row.get('CRÉDITO AUTORIZADO', 0))
+                        v_ini = limpar_f(row.get('ORÇADO INICIAL', 0))
+
+                        if v_aut > 0 or v_emp > 0 or v_liq > 0 or v_pag > 0:
+                            dados.append((m_final, 2026, uo, str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), 
+                                         str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), str(row.get('NATUREZA DESPESA', '')), 
+                                         str(row.get('FONTE', '')), v_ini, v_aut, v_emp, v_liq, v_pag))
+                
                 conn.execute("DELETE FROM despesas WHERE mes=?", (m_final,))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
+            
             conn.commit()
             st.success(f"✅ Importado: {MESES_NOMES[m_final-1]}")
             st.rerun()
@@ -116,8 +130,11 @@ with tab2:
         
         if not df_f.empty:
             m_max = df_f['mes'].max()
-            # Crédito: Soma o crédito apenas do último mês selecionado
-            v_aut = df_desp[df_desp['mes'] == m_max]['cred_autorizado'].sum()
+            # CRÉDITO: Agrupamos para pegar o valor máximo por categoria do último mês selecionado
+            # Isso garante que ele não zere e nem duplique.
+            df_credito = df_desp[df_desp['mes'] == m_max]
+            v_aut = df_credito.groupby(['uo','funcao','subfuncao','programa','projeto','natureza','fonte'])['cred_autorizado'].max().sum()
+            
             ve, vl, vp = df_f['empenhado'].sum(), df_f['liquidado'].sum(), df_f['pago'].sum()
             
             k1, k2, k3, k4 = st.columns(4)
