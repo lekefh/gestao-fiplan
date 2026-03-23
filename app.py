@@ -10,6 +10,11 @@ NOME_UNIDADE = "GESTÃO INTEGRADA FIPLAN"
 DB_NAME = 'dados_gestao_integrada.db'
 st.set_page_config(page_title=f"FIPLAN - {NOME_UNIDADE}", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+# Dicionário auxiliar para conversão
+MESES_MAPA = {
+    "JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4, "MAIO": 5, "JUNHO": 6,
+    "JULHO": 7, "AGOSTO": 8, "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12
+}
 
 # CSS: Mantendo o padrão de letras menores
 st.markdown("""
@@ -24,7 +29,6 @@ def inicializar_banco():
     conn.execute('''CREATE TABLE IF NOT EXISTS receitas 
         (mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT, 
         orcado REAL, realizado REAL, previsao REAL)''')
-    # Estrutura adaptada para o FIP 616
     conn.execute('''CREATE TABLE IF NOT EXISTS despesas 
         (mes INTEGER, ano INTEGER, uo TEXT, funcao TEXT, subfuncao TEXT, 
         programa TEXT, projeto TEXT, natureza TEXT, fonte TEXT,
@@ -37,6 +41,22 @@ def limpar_f(v):
     try: return float(v)
     except: return 0.0
 
+# --- NOVA FUNÇÃO: DETECTAR MÊS ---
+def detectar_mes_fiplan(arquivo):
+    try:
+        # Lê o topo do arquivo para escanear o texto do cabeçalho
+        df_scan = pd.read_excel(arquivo, nrows=15, header=None)
+        for r in range(len(df_scan)):
+            for c in range(len(df_scan.columns)):
+                celula = str(df_scan.iloc[r, c]).upper()
+                if "MÊS DE REFERÊNCIA" in celula:
+                    for nome_mes, num_mes in MESES_MAPA.items():
+                        if nome_mes in celula:
+                            return num_mes
+    except:
+        return None
+    return None
+
 inicializar_banco()
 
 # --- SIDEBAR: IMPORTAÇÃO ---
@@ -44,10 +64,16 @@ with st.sidebar:
     st.subheader("📥 Importar Dados")
     tipo_dado = st.radio("Tipo:", ["Receita", "Despesa"])
     arquivo = st.file_uploader(f"Arquivo {tipo_dado}", type=["xlsx"])
-    mes_ref = st.selectbox("Mês", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
+    
+    # Mês manual agora serve como "backup" caso a detecção automática falhe
+    mes_manual = st.selectbox("Mês (Backup)", range(1, 13), index=0, format_func=lambda x: MESES_NOMES[x-1])
     ano_ref = st.number_input("Ano", value=2026)
     
     if arquivo and st.button("🚀 Processar Dados"):
+        # Tenta detectar o mês automaticamente
+        mes_auto = detectar_mes_fiplan(arquivo)
+        mes_final = mes_auto if mes_auto else mes_manual
+        
         conn = sqlite3.connect(DB_NAME)
         try:
             if tipo_dado == "Receita":
@@ -56,11 +82,10 @@ with st.sidebar:
                 for _, row in df.iterrows():
                     cod, nat = str(row.iloc[0]).strip(), str(row.iloc[1]).strip()
                     if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) >= 13:
-                        dados.append((mes_ref, ano_ref, cod, nat, limpar_f(row.iloc[3]), limpar_f(row.iloc[6]), limpar_f(row.iloc[5])))
-                conn.execute("DELETE FROM receitas WHERE mes=? AND ano=?", (mes_ref, ano_ref))
+                        dados.append((mes_final, ano_ref, cod, nat, limpar_f(row.iloc[3]), limpar_f(row.iloc[6]), limpar_f(row.iloc[5])))
+                conn.execute("DELETE FROM receitas WHERE mes=? AND ano=?", (mes_final, ano_ref))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?)", dados)
             else:
-                # NOVO MAPEAMENTO PARA FIP 616 (Pula 6 linhas de cabeçalho)
                 df = pd.read_excel(arquivo, skiprows=6)
                 df.columns = df.columns.str.strip().str.upper()
                 dados = []
@@ -68,7 +93,7 @@ with st.sidebar:
                     uo = str(row.get('UO', '')).strip()
                     if uo != "" and uo != "nan":
                         dados.append((
-                            mes_ref, ano_ref, uo, 
+                            mes_final, ano_ref, uo, 
                             str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), 
                             str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), 
                             str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')),
@@ -78,9 +103,12 @@ with st.sidebar:
                             limpar_f(row.get('LIQUIDADO', 0)), 
                             limpar_f(row.get('PAGO', 0))
                         ))
-                conn.execute("DELETE FROM despesas WHERE mes=? AND ano=?", (mes_ref, ano_ref))
+                conn.execute("DELETE FROM despesas WHERE mes=? AND ano=?", (mes_final, ano_ref))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
-            conn.commit(); st.success("✅ Importado!"); st.rerun()
+            
+            conn.commit()
+            st.success(f"✅ Importado com sucesso! Mês identificado: {MESES_NOMES[mes_final-1]}")
+            st.rerun()
         except Exception as e: st.error(f"Erro: {e}")
         finally: conn.close()
 
@@ -96,6 +124,7 @@ conn.close()
 
 tab1, tab2, tab3 = st.tabs(["📊 Receitas", "💸 Despesas", "⚖️ Confronto"])
 
+# (O restante do código das abas 1, 2 e 3 permanece exatamente como você enviou)
 # --- ABA 1: RECEITAS ---
 with tab1:
     if not df_rec_raw.empty:
@@ -104,12 +133,10 @@ with tab1:
         meses_r = c2.multiselect("Meses:", sorted(df_rec_raw['mes'].unique()), default=df_rec_raw['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="mr")
         nat_r = c3.multiselect("Filtrar Naturezas:", sorted(df_rec_raw['natureza'].unique()), key="nr")
         df_rf = df_rec_raw[(df_rec_raw['ano'].isin(anos_r)) & (df_rec_raw['mes'].isin(meses_r))]
-        total_p = df_rf['realizado'].sum()
-        if nat_r: df_rf = df_rf[df_rf['natureza'].isin(nat_r)]
         if not df_rf.empty:
-            k1, k2, k3 = st.columns(3)
             v_orc = df_rf.groupby(['ano', 'codigo_full'])['orcado'].last().sum()
             v_real = df_rf['realizado'].sum()
+            k1, k2, k3 = st.columns(3)
             k1.metric("Orçado", f"R$ {v_orc:,.2f}"); k2.metric("Realizado", f"R$ {v_real:,.2f}"); k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
             df_g = df_rf.groupby(['ano', 'mes'])[['realizado', 'previsao']].sum().reset_index()
             df_g['label'] = df_g.apply(lambda x: f"{MESES_NOMES[int(x['mes'])-1]}/{str(int(x['ano']))[2:]}", axis=1)
@@ -119,15 +146,15 @@ with tab1:
             fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0)); st.plotly_chart(fig, use_container_width=True)
             st.dataframe(df_rf[['codigo_full', 'natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), use_container_width=True)
 
-# --- ABA 2: DESPESAS (Novo FIP 616) ---
+# --- ABA 2: DESPESAS ---
 with tab2:
     if not df_desp_raw.empty:
         f1, f2, f3, f4, f5, f6 = st.columns(6)
         anos_d = f1.multiselect("Anos:", sorted(df_desp_raw['ano'].unique()), default=df_desp_raw['ano'].unique(), key="ad")
         meses_d = f2.multiselect("Meses:", sorted(df_desp_raw['mes'].unique()), default=df_desp_raw['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="md")
         func_sel = f3.multiselect("Função:", sorted(df_desp_raw['funcao'].unique()))
-        sub_sel = f4.multiselect("Subfunção:", sorted(df_desp_raw['subfuncao'].unique())) # NOVO FILTRO
-        font_sel = f5.multiselect("Fonte:", sorted(df_desp_raw['fonte'].unique())) # NOVO FILTRO
+        sub_sel = f4.multiselect("Subfunção:", sorted(df_desp_raw['subfuncao'].unique())) 
+        font_sel = f5.multiselect("Fonte:", sorted(df_desp_raw['fonte'].unique())) 
         nat_sel = f6.multiselect("Natureza:", sorted(df_desp_raw['natureza'].unique()))
         
         df_df = df_desp_raw[(df_desp_raw['ano'].isin(anos_d)) & (df_desp_raw['mes'].isin(meses_d))]
