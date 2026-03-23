@@ -46,7 +46,7 @@ with st.sidebar:
     if arquivo and st.button("🚀 Processar Dados"):
         m_final = detectar_mes(arquivo)
         if not m_final:
-            st.error("Mês não detectado no cabeçalho do arquivo.")
+            st.error("Mês não detetado no cabeçalho.")
             st.stop()
         conn = sqlite3.connect(DB_NAME)
         try:
@@ -62,19 +62,22 @@ with st.sidebar:
             else:
                 df = pd.read_excel(arquivo, skiprows=6)
                 df.columns = df.columns.str.strip().str.upper()
-                # A MÁGICA QUE DEU CERTO: Agrupa para remover duplicidades de subtotais (UGs repetidas)
-                # Incluímos LIQUIDADO e PAGO no agrupamento agora
-                df_limpo = df.groupby(['UO','FUNÇÃO','SUBFUNÇÃO','PROGRAMA','PAOE','NATUREZA DESPESA','FONTE']).agg({
-                    'ORÇADO INICIAL': 'max', 'CRÉDITO AUTORIZADO': 'max', 'EMPENHADO': 'max', 'LIQUIDADO': 'max', 'PAGO': 'max'
-                }).reset_index()
+                
+                # REGRA FINAL FIP 616: Só importa se ELEMENTO != 0 e UG != 0
+                # Isto garante que pegamos apenas o detalhe real e não os subtotais
+                df_detalhe = df[(df['ELEMENTO'].astype(float) != 0) & (df['UG'].astype(str) != '0')].copy()
                 
                 dados = []
-                for _, row in df_limpo.iterrows():
-                    dados.append((m_final, 2026, str(row['UO']), str(row['FUNÇÃO']), str(row['SUBFUNÇÃO']), str(row['PROGRAMA']), str(row['PAOE']), str(row['NATUREZA DESPESA']), str(row['FONTE']), row['ORÇADO INICIAL'], row['CRÉDITO AUTORIZADO'], row['EMPENHADO'], row['LIQUIDADO'], row['PAGO']))
+                for _, row in df_detalhe.iterrows():
+                    dados.append((m_final, 2026, str(row.get('UO')), str(row.get('FUNÇÃO')), str(row.get('SUBFUNÇÃO')), 
+                                 str(row.get('PROGRAMA')), str(row.get('PAOE')), str(row.get('NATUREZA DESPESA')), 
+                                 str(row.get('FONTE')), limpar_f(row.get('ORÇADO INICIAL')), 
+                                 limpar_f(row.get('CRÉDITO AUTORIZADO')), limpar_f(row.get('EMPENHADO')), 
+                                 limpar_f(row.get('LIQUIDADO')), limpar_f(row.get('PAGO'))))
                 conn.execute("DELETE FROM despesas WHERE mes=?", (m_final,))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
             conn.commit()
-            st.success(f"✅ Sucesso! Mês {MESES_NOMES[m_final-1]} Importado.")
+            st.success(f"✅ Importado: {MESES_NOMES[m_final-1]}")
             st.rerun()
         except Exception as e: st.error(f"Erro: {e}")
         finally: conn.close()
@@ -91,40 +94,30 @@ conn.close()
 
 tab1, tab2 = st.tabs(["📊 Receitas", "💸 Despesas"])
 
-with tab1:
-    if not df_rec.empty:
-        c1, c2 = st.columns([1, 2])
-        ms_r = c1.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msr")
-        br = c2.text_input("Natureza (Contém):", key="br", placeholder="Busca na receita...")
-        df_rf = df_rec[df_rec['mes'].isin(ms_r)]
-        if br: df_rf = df_rf[df_rf['natureza'].str.contains(br, case=False, na=False)]
-        st.metric("Total Realizado", f"R$ {df_rf['realizado'].sum():,.2f}")
-        st.dataframe(df_rf[['natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), width='stretch')
-
 with tab2:
     if not df_desp.empty:
-        # --- TODOS OS FILTROS DE VOLTA ---
+        # FILTROS
         f1, f2, f3 = st.columns(3)
         ms_d = f1.multiselect("Meses:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msd")
-        fs = f2.multiselect("Função:", sorted(df_desp['funcao'].unique()))
-        ss = f3.multiselect("Subfunção:", sorted(df_desp['subfuncao'].unique()))
+        ss = f2.multiselect("Subfunção:", sorted(df_desp['subfuncao'].unique()))
+        ps = f3.multiselect("Programa:", sorted(df_desp['programa'].unique()))
 
         f4, f5, f6 = st.columns(3)
-        ps = f4.multiselect("Programa:", sorted(df_desp['programa'].unique()))
+        pjs = f4.multiselect("Projeto/PAOE:", sorted(df_desp['projeto'].unique()))
         fts = f5.multiselect("Fonte:", sorted(df_desp['fonte'].unique()))
         bd = f6.text_input("Natureza (Contém):", placeholder="Ex: 3390", key="bd")
         
         df_f = df_desp[df_desp['mes'].isin(ms_d)]
-        if fs: df_f = df_f[df_f['funcao'].isin(fs)]
         if ss: df_f = df_f[df_f['subfuncao'].isin(ss)]
         if ps: df_f = df_f[df_f['programa'].isin(ps)]
+        if pjs: df_f = df_f[df_f['projeto'].isin(pjs)]
         if fts: df_f = df_f[df_f['fonte'].isin(fts)]
         if bd: df_f = df_f[df_f['natureza'].str.contains(bd, case=False, na=False)]
         
         if not df_f.empty:
-            m_ultima = max(ms_d)
-            # Crédito: Pega o máximo por categoria no último mês selecionado
-            v_aut = df_desp[df_desp['mes'] == m_ultima].groupby(['uo','funcao','subfuncao','programa','projeto','natureza','fonte'])['cred_autorizado'].max().sum()
+            m_max = df_f['mes'].max()
+            # Crédito: Soma o crédito apenas do último mês selecionado
+            v_aut = df_desp[df_desp['mes'] == m_max]['cred_autorizado'].sum()
             ve, vl, vp = df_f['empenhado'].sum(), df_f['liquidado'].sum(), df_f['pago'].sum()
             
             k1, k2, k3, k4 = st.columns(4)
