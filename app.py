@@ -4,18 +4,16 @@ import sqlite3
 import plotly.graph_objects as go
 import re
 
-# --- CONFIGURAÇÃO DA UNIDADE ---
-NOME_UNIDADE = "GESTÃO INTEGRADA FIPLAN" 
-
+# --- CONFIGURAÇÃO ---
 DB_NAME = 'dados_gestao_integrada.db'
-st.set_page_config(page_title=f"FIPLAN - {NOME_UNIDADE}", layout="wide")
+st.set_page_config(page_title="Gestão Integrada FIPLAN", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
-# CSS: Mantendo o padrão de letras menores
+# CSS: Letras menores nos KPIs
 st.markdown("""
     <style>
     [data-testid="stMetricValue"] { font-size: 1.4rem !important; font-weight: 700; }
-    [data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
+    [data-testid="stMetricLabel"] { font-size: 0.8rem !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -24,7 +22,6 @@ def inicializar_banco():
     conn.execute('''CREATE TABLE IF NOT EXISTS receitas 
         (mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT, 
         orcado REAL, realizado REAL, previsao REAL)''')
-    # Estrutura adaptada para o FIP 616
     conn.execute('''CREATE TABLE IF NOT EXISTS despesas 
         (mes INTEGER, ano INTEGER, uo TEXT, funcao TEXT, subfuncao TEXT, 
         programa TEXT, projeto TEXT, natureza TEXT, fonte TEXT,
@@ -55,29 +52,22 @@ with st.sidebar:
                 dados = []
                 for _, row in df.iterrows():
                     cod, nat = str(row.iloc[0]).strip(), str(row.iloc[1]).strip()
-                    if re.match(r'^\d', cod) and not cod.endswith('.0') and not cod.endswith('.00') and len(cod) >= 13:
+                    if re.match(r'^\d', cod) and not cod.endswith('.0') and len(cod) >= 13:
                         dados.append((mes_ref, ano_ref, cod, nat, limpar_f(row.iloc[3]), limpar_f(row.iloc[6]), limpar_f(row.iloc[5])))
                 conn.execute("DELETE FROM receitas WHERE mes=? AND ano=?", (mes_ref, ano_ref))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?)", dados)
             else:
-                # NOVO MAPEAMENTO PARA FIP 616 (Pula 6 linhas de cabeçalho)
                 df = pd.read_excel(arquivo, skiprows=6)
                 df.columns = df.columns.str.strip().str.upper()
                 dados = []
                 for _, row in df.iterrows():
                     uo = str(row.get('UO', '')).strip()
                     if uo != "" and uo != "nan":
-                        dados.append((
-                            mes_ref, ano_ref, uo, 
-                            str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), 
-                            str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), 
-                            str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')),
-                            limpar_f(row.get('ORÇADO INICIAL', 0)), 
-                            limpar_f(row.get('CRÉDITO AUTORIZADO', 0)), 
-                            limpar_f(row.get('EMPENHADO', 0)), 
-                            limpar_f(row.get('LIQUIDADO', 0)), 
-                            limpar_f(row.get('PAGO', 0))
-                        ))
+                        dados.append((mes_ref, ano_ref, uo, str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), 
+                                     str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), 
+                                     str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')),
+                                     limpar_f(row.get('ORÇADO INICIAL', 0)), limpar_f(row.get('CRÉDITO AUTORIZADO', 0)), 
+                                     limpar_f(row.get('EMPENHADO', 0)), limpar_f(row.get('LIQUIDADO', 0)), limpar_f(row.get('PAGO', 0))))
                 conn.execute("DELETE FROM despesas WHERE mes=? AND ano=?", (mes_ref, ano_ref))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
             conn.commit(); st.success("✅ Importado!"); st.rerun()
@@ -88,84 +78,110 @@ with st.sidebar:
         conn = sqlite3.connect(DB_NAME); conn.execute("DROP TABLE IF EXISTS receitas"); conn.execute("DROP TABLE IF EXISTS despesas")
         conn.commit(); conn.close(); inicializar_banco(); st.rerun()
 
-# --- CARGA ---
+# --- FUNÇÃO DE CÁLCULO INCREMENTAL ---
+def calcular_incremental(df, colunas_acumuladas, colunas_fixas):
+    if df.empty: return df
+    df = df.sort_values(by=['mes'])
+    # Agrupar por natureza/chave única para subtrair corretamente
+    chaves = ['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte'] if 'uo' in df.columns else ['codigo_full']
+    
+    # Criar uma cópia para o resultado
+    df_res = df.copy()
+    
+    for mes in sorted(df['mes'].unique()):
+        if mes > df['mes'].min():
+            for chave, grupo in df.groupby(chaves):
+                val_atual = grupo[grupo['mes'] == mes]
+                val_anterior = grupo[grupo['mes'] < mes].sort_values('mes').last('1D') # Pega o mês imediatamente anterior disponível
+                
+                if not val_atual.empty and not val_anterior.empty:
+                    idx = val_atual.index[0]
+                    for col in colunas_acumuladas:
+                        # Cálculo: Atual - Anterior
+                        incremental = val_atual[col].values[0] - val_anterior[col].values[0]
+                        df_res.at[idx, col] = max(0, incremental) # Evita números negativos por erros de arredondamento
+    return df_res
+
+# --- CARGA E CÁLCULO ---
 conn = sqlite3.connect(DB_NAME)
-df_rec_raw = pd.read_sql("SELECT * FROM receitas WHERE natureza != 'None'", conn)
+df_rec_raw = pd.read_sql("SELECT * FROM receitas", conn)
 df_desp_raw = pd.read_sql("SELECT * FROM despesas", conn)
 conn.close()
+
+# Aplicar lógica incremental
+df_rec_inc = calcular_incremental(df_rec_raw, ['realizado'], ['orcado'])
+df_desp_inc = calcular_incremental(df_desp_raw, ['empenhado', 'liquidado', 'pago'], ['orcado_inicial', 'cred_autorizado'])
 
 tab1, tab2, tab3 = st.tabs(["📊 Receitas", "💸 Despesas", "⚖️ Confronto"])
 
 # --- ABA 1: RECEITAS ---
 with tab1:
-    if not df_rec_raw.empty:
+    if not df_rec_inc.empty:
         c1, c2, c3 = st.columns([1, 1, 2])
-        anos_r = c1.multiselect("Anos:", sorted(df_rec_raw['ano'].unique()), default=df_rec_raw['ano'].unique(), key="ar")
-        meses_r = c2.multiselect("Meses:", sorted(df_rec_raw['mes'].unique()), default=df_rec_raw['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="mr")
-        nat_r = c3.multiselect("Filtrar Naturezas:", sorted(df_rec_raw['natureza'].unique()), key="nr")
-        df_rf = df_rec_raw[(df_rec_raw['ano'].isin(anos_r)) & (df_rec_raw['mes'].isin(meses_r))]
-        total_p = df_rf['realizado'].sum()
-        if nat_r: df_rf = df_rf[df_rf['natureza'].isin(nat_r)]
-        if not df_rf.empty:
-            k1, k2, k3 = st.columns(3)
-            v_orc = df_rf.groupby(['ano', 'codigo_full'])['orcado'].last().sum()
-            v_real = df_rf['realizado'].sum()
-            k1.metric("Orçado", f"R$ {v_orc:,.2f}"); k2.metric("Realizado", f"R$ {v_real:,.2f}"); k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
-            df_g = df_rf.groupby(['ano', 'mes'])[['realizado', 'previsao']].sum().reset_index()
-            df_g['label'] = df_g.apply(lambda x: f"{MESES_NOMES[int(x['mes'])-1]}/{str(int(x['ano']))[2:]}", axis=1)
-            fig = go.Figure()
-            fig.add_trace(go.Bar(x=df_g['label'], y=df_g['realizado'], name="Realizado", marker_color='#2E7D32'))
-            fig.add_trace(go.Scatter(x=df_g['label'], y=df_g['previsao'], name="Previsão", line=dict(color='#FF9800', width=2, dash='dot')))
-            fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0)); st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(df_rf[['codigo_full', 'natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), use_container_width=True)
-
-# --- ABA 2: DESPESAS (Novo FIP 616) ---
-with tab2:
-    if not df_desp_raw.empty:
-        f1, f2, f3, f4, f5, f6 = st.columns(6)
-        anos_d = f1.multiselect("Anos:", sorted(df_desp_raw['ano'].unique()), default=df_desp_raw['ano'].unique(), key="ad")
-        meses_d = f2.multiselect("Meses:", sorted(df_desp_raw['mes'].unique()), default=df_desp_raw['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="md")
-        func_sel = f3.multiselect("Função:", sorted(df_desp_raw['funcao'].unique()))
-        sub_sel = f4.multiselect("Subfunção:", sorted(df_desp_raw['subfuncao'].unique())) # NOVO FILTRO
-        font_sel = f5.multiselect("Fonte:", sorted(df_desp_raw['fonte'].unique())) # NOVO FILTRO
-        nat_sel = f6.multiselect("Natureza:", sorted(df_desp_raw['natureza'].unique()))
+        anos_r = c1.multiselect("Anos:", sorted(df_rec_inc['ano'].unique()), default=df_rec_inc['ano'].unique(), key="ar")
+        meses_r = c2.multiselect("Meses:", sorted(df_rec_inc['mes'].unique()), default=df_rec_inc['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="mr")
+        nat_r = c3.multiselect("Filtrar Naturezas:", sorted(df_rec_inc['natureza'].unique()), key="nr")
         
-        df_df = df_desp_raw[(df_desp_raw['ano'].isin(anos_d)) & (df_desp_raw['mes'].isin(meses_d))]
+        df_rf = df_rec_inc[(df_rec_inc['ano'].isin(anos_r)) & (df_rec_inc['mes'].isin(meses_r))]
+        if nat_r: df_rf = df_rf[df_rf['natureza'].isin(nat_r)]
+        
+        if not df_rf.empty:
+            v_real = df_rf['realizado'].sum()
+            # Orçado sempre pega o último mês selecionado (sem subtrair)
+            mes_max = df_rf['mes'].max()
+            v_orc = df_rf[df_rf['mes'] == mes_max].groupby(['ano', 'codigo_full'])['orcado'].last().sum()
+            
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Orçado (Atual)", f"R$ {v_orc:,.2f}")
+            k2.metric("Realizado (Soma Meses)", f"R$ {v_real:,.2f}")
+            k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
+
+            df_g = df_rf.groupby(['ano', 'mes'])[['realizado']].sum().reset_index()
+            df_g['label'] = df_g.apply(lambda x: f"{MESES_NOMES[int(x['mes'])-1]}", axis=1)
+            st.plotly_chart(go.Figure(data=[go.Bar(x=df_g['label'], y=df_g['realizado'], marker_color='#2E7D32')]), use_container_width=True)
+            st.dataframe(df_rf[['natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), use_container_width=True)
+
+# --- ABA 2: DESPESAS ---
+with tab2:
+    if not df_desp_inc.empty:
+        f1, f2, f3, f4 = st.columns([1, 1, 2, 2])
+        anos_d = f1.multiselect("Anos:", sorted(df_desp_inc['ano'].unique()), default=df_desp_inc['ano'].unique(), key="ad")
+        meses_d = f2.multiselect("Meses:", sorted(df_desp_inc['mes'].unique()), default=df_desp_inc['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="md")
+        func_sel = f3.multiselect("Função:", sorted(df_desp_inc['funcao'].unique()))
+        nat_sel = f4.multiselect("Natureza:", sorted(df_desp_inc['natureza'].unique()))
+        
+        df_df = df_desp_inc[(df_desp_inc['ano'].isin(anos_d)) & (df_desp_inc['mes'].isin(meses_d))]
         if func_sel: df_df = df_df[df_df['funcao'].isin(func_sel)]
-        if sub_sel: df_df = df_df[df_df['subfuncao'].isin(sub_sel)]
-        if font_sel: df_df = df_df[df_df['fonte'].isin(font_sel)]
         if nat_sel: df_df = df_df[df_df['natureza'].isin(nat_sel)]
 
         if not df_df.empty:
+            mes_max_d = df_df['mes'].max()
+            v_autorizado = df_df[df_df['mes'] == mes_max_d]['cred_autorizado'].sum()
+            v_emp = df_df['empenhado'].sum()
+            v_liq = df_df['liquidado'].sum()
+            v_pag = df_df['pago'].sum()
+
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Créd. Autorizado", f"R$ {df_df['cred_autorizado'].sum():,.2f}")
-            k2.metric("Empenhado", f"R$ {df_df['empenhado'].sum():,.2f}")
-            k3.metric("Liquidado", f"R$ {df_df['liquidado'].sum():,.2f}")
-            k4.metric("Pago", f"R$ {df_df['pago'].sum():,.2f}")
+            k1.metric("Créd. Autorizado (Atual)", f"R$ {v_autorizado:,.2f}")
+            k2.metric("Empenhado (Soma)", f"R$ {v_emp:,.2f}")
+            k3.metric("Liquidado (Soma)", f"R$ {v_liq:,.2f}")
+            k4.metric("Pago (Soma)", f"R$ {v_pag:,.2f}")
             
-            fig_d = go.Figure()
-            fig_d.add_trace(go.Bar(name='Empenhado', x=['Total'], y=[df_df['empenhado'].sum()], marker_color='#A9A9A9'))
-            fig_d.add_trace(go.Bar(name='Liquidado', x=['Total'], y=[df_df['liquidado'].sum()], marker_color='#72A0C1'))
-            fig_d.add_trace(go.Bar(name='Pago', x=['Total'], y=[df_df['pago'].sum()], marker_color='#2E7D32'))
-            fig_d.update_layout(height=300, barmode='group'); st.plotly_chart(fig_d, use_container_width=True)
-            st.dataframe(df_df[['funcao', 'subfuncao', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
-                'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'}), use_container_width=True)
+            fig = go.Figure(data=[
+                go.Bar(name='Empenhado', x=['Total'], y=[v_emp], marker_color='#A9A9A9'),
+                go.Bar(name='Liquidado', x=['Total'], y=[v_liq], marker_color='#72A0C1'),
+                go.Bar(name='Pago', x=['Total'], y=[v_pag], marker_color='#2E7D32')
+            ])
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(df_df[['funcao', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format('{:,.2f}'), use_container_width=True)
 
 # --- ABA 3: CONFRONTO ---
 with tab3:
-    if not df_rec_raw.empty or not df_desp_raw.empty:
-        st.subheader("⚖️ Confronto Geral")
-        anos_c = st.multiselect("Anos Confronto:", sorted(list(set(df_rec_raw['ano'].unique()) | set(df_desp_raw['ano'].unique()))), default=[2026], key="ac")
-        tr = df_rec_raw[df_rec_raw['ano'].isin(anos_c)]['realizado'].sum()
-        te = df_desp_raw[df_desp_raw['ano'].isin(anos_c)]['empenhado'].sum()
-        tp = df_desp_raw[df_desp_raw['ano'].isin(anos_c)]['pago'].sum()
-        
-        k_c1, k_c2, k_c3 = st.columns(3)
-        k_c1.metric("Receita Arrecadada", f"R$ {tr:,.2f}")
-        k_c2.metric("Despesa Empenhada", f"R$ {te:,.2f}")
-        k_c3.metric("Despesa Paga", f"R$ {tp:,.2f}")
-        
-        st.divider()
+    if not df_rec_inc.empty or not df_desp_inc.empty:
+        tr = df_rf['realizado'].sum() if not df_rf.empty else 0
+        tp = df_df['pago'].sum() if not df_df.empty else 0
+        te = df_df['empenhado'].sum() if not df_df.empty else 0
+        st.subheader("⚖️ Confronto do Período Selecionado")
         m1, m2 = st.columns(2)
-        m1.info(f"**Superávit Financeiro (Receita - Pago):** \n R$ {tr - tp:,.2f}")
-        m2.warning(f"**Superávit Orçamentário (Receita - Empenhado):** \n R$ {tr - te:,.2f}")
+        m1.info(f"**Superávit Financeiro:** R$ {tr - tp:,.2f}")
+        m2.warning(f"**Superávit Orçamentário:** R$ {tr - te:,.2f}")
