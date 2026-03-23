@@ -9,18 +9,13 @@ DB_NAME = 'dados_gestao_integrada.db'
 st.set_page_config(page_title="FIPLAN - GESTÃO INTEGRADA", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 MESES_MAPA = {"JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4, "MAIO": 5, "JUNHO": 6, "JULHO": 7, "AGOSTO": 8, "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12}
-
-st.markdown("""
-    <style>
-    [data-testid="stMetricValue"] { font-size: 1.4rem !important; font-weight: 700; }
-    [data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
-    </style>
-    """, unsafe_allow_html=True)
+CATEGORIAS_REC = ["Receita Tributária", "Receita Patrimonial", "Receita de Serviços", "Repasses Correntes", "Demais Receitas"]
 
 def inicializar_banco():
     conn = sqlite3.connect(DB_NAME)
+    # Adicionada coluna 'categoria' na tabela de receitas
     conn.execute('''CREATE TABLE IF NOT EXISTS receitas 
-        (mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT, orcado REAL, realizado REAL, previsao REAL)''')
+        (mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT, orcado REAL, realizado REAL, previsao REAL, categoria TEXT DEFAULT 'Não Classificada')''')
     conn.execute('''CREATE TABLE IF NOT EXISTS despesas 
         (mes INTEGER, ano INTEGER, uo TEXT, funcao TEXT, subfuncao TEXT, programa TEXT, projeto TEXT, natureza TEXT, fonte TEXT, orcado_inicial REAL, cred_autorizado REAL, empenhado REAL, liquidado REAL, pago REAL)''')
     conn.close()
@@ -38,8 +33,9 @@ def detectar_mes(arquivo):
         for r in range(len(df_scan)):
             for celula in df_scan.iloc[r]:
                 texto = str(celula).upper()
-                for nome, num in MESES_MAPA.items():
-                    if nome in texto: return num
+                if "MÊS DE REFERÊNCIA" in texto:
+                    for nome, num in MESES_MAPA.items():
+                        if nome in texto: return num
     except: return None
     return None
 
@@ -59,24 +55,27 @@ with st.sidebar:
         conn = sqlite3.connect(DB_NAME)
         try:
             if tipo_dado == "Receita":
-                # FIP 729: Receita
                 df = pd.read_excel(arquivo, skiprows=7)
                 dados = []
                 for _, row in df.iterrows():
                     cod = str(row.iloc[0]).strip().replace('"', '')
-                    # REGRA SOLICITADA: Somente códigos onde o último dígito é diferente de zero (Analíticas)
+                    # REGRA ANALÍTICA: Último dígito != 0
                     if re.match(r'^\d', cod) and cod[-1] != '0':
-                        valor = limpar_f(row.iloc[6]) # Coluna Realização NO MÊS
-                        # REGRA SOLICITADA: Começou com 6 é dedutiva
-                        if cod.startswith('6'):
-                            valor = -abs(valor)
+                        valor = limpar_f(row.iloc[6])
+                        if cod.startswith('6'): valor = -abs(valor)
+                        
+                        # Mantém a categoria se já existir no banco
+                        cursor = conn.execute("SELECT categoria FROM receitas WHERE codigo_full = ?", (cod,))
+                        row_cat = cursor.fetchone()
+                        cat_atual = row_cat[0] if row_cat else "Não Classificada"
                         
                         dados.append((m_final, 2026, cod, str(row.iloc[1]).replace('"', ''), 
-                                     limpar_f(row.iloc[3]), valor, limpar_f(row.iloc[5])))
+                                     limpar_f(row.iloc[3]), valor, limpar_f(row.iloc[5]), cat_atual))
+                
                 conn.execute("DELETE FROM receitas WHERE mes=?", (m_final,))
-                conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?)", dados)
+                conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?)", dados)
             else:
-                # FIP 616: Despesa (Lógica centavo a centavo)
+                # DESPESA (Lógica validada)
                 df = pd.read_excel(arquivo, skiprows=6)
                 df.columns = df.columns.str.strip().str.upper()
                 dados = []
@@ -96,14 +95,9 @@ with st.sidebar:
                 conn.execute("DELETE FROM despesas WHERE mes=?", (m_final,))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
             conn.commit()
-            st.success(f"✅ Importado: {MESES_NOMES[m_final-1]}")
-            st.rerun()
+            st.success("✅ Importado!"); st.rerun()
         except Exception as e: st.error(f"Erro: {e}")
         finally: conn.close()
-
-    if st.button("🔴 LIMPAR TUDO"):
-        conn = sqlite3.connect(DB_NAME); conn.execute("DROP TABLE IF EXISTS receitas"); conn.execute("DROP TABLE IF EXISTS despesas")
-        conn.commit(); conn.close(); inicializar_banco(); st.rerun()
 
 # --- CARGA ---
 conn = sqlite3.connect(DB_NAME)
@@ -113,34 +107,44 @@ conn.close()
 
 tab1, tab2 = st.tabs(["📊 Receitas", "💸 Despesas"])
 
+# --- ABA 1: RECEITAS ---
 with tab1:
     if not df_rec.empty:
-        c1, c2, c3 = st.columns([1, 1, 2])
-        anos_r = c1.multiselect("Anos:", sorted(df_rec['ano'].unique()), default=df_rec['ano'].unique(), key="ar")
-        ms_r = c2.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msr")
-        br = c3.text_input("Natureza (Contém):", key="br_r")
+        # Gerenciador de Categorias
+        with st.expander("🏷️ Classificar Naturezas de Receita"):
+            c1, c2, c3 = st.columns([2, 2, 1])
+            nat_para_class = c1.selectbox("Selecione a Natureza:", sorted(df_rec['natureza'].unique()))
+            nova_cat = c2.selectbox("Atribuir Categoria:", CATEGORIAS_REC)
+            if c3.button("Salvar Categoria"):
+                conn = sqlite3.connect(DB_NAME)
+                conn.execute("UPDATE receitas SET categoria = ? WHERE natureza = ?", (nova_cat, nat_para_class))
+                conn.commit(); conn.close(); st.rerun()
+
+        st.divider()
         
-        df_rf = df_rec[(df_rec['mes'].isin(ms_r)) & (df_rec['ano'].isin(anos_r))]
-        if br: df_rf = df_rf[df_rf['natureza'].str.contains(br, case=False, na=False)]
+        # Filtros
+        f1, f2, f3 = st.columns(3)
+        ms_r = f1.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
+        cat_sel = f2.multiselect("Categoria:", sorted(df_rec['categoria'].unique()), default=sorted(df_rec['categoria'].unique()))
+        nat_sel = f3.multiselect("Natureza:", sorted(df_rec['natureza'].unique()))
+
+        df_rf = df_rec[(df_rec['mes'].isin(ms_r)) & (df_rec['categoria'].isin(cat_sel))]
+        if nat_sel: df_rf = df_rf[df_rf['natureza'].isin(nat_sel)]
         
         if not df_rf.empty:
-            v_real = df_rf['realizado'].sum()
-            v_orc = df_rec[df_rec['mes'] == max(ms_r)]['orcado'].sum()
-            
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Orçado Atualizado", f"R$ {v_orc:,.2f}")
-            k2.metric("Líquido Arrecadado", f"R$ {v_real:,.2f}")
-            k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
+            k1, k2 = st.columns(2)
+            k1.metric("Líquido Arrecadado", f"R$ {df_rf['realizado'].sum():,.2f}")
+            k2.metric("Orçado Atual", f"R$ {df_rf.groupby(['codigo_full'])['orcado'].max().sum():,.2f}")
 
-            # Gráfico Verde de Barras (Receita)
-            df_g = df_rf.groupby(['mes'])[['realizado']].sum().reset_index()
-            fig = go.Figure(data=[go.Bar(x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]), y=df_g['realizado'], marker_color='#2E7D32')])
-            fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
-            st.plotly_chart(fig, use_container_width=True)
+            # Gráfico por Categoria
+            fig_cat = go.Figure(data=[go.Pie(labels=df_rf['categoria'], values=df_rf['realizado'], hole=.3)])
+            fig_cat.update_layout(height=400, title="Distribuição por Categoria")
+            st.plotly_chart(fig_cat, use_container_width=True)
             
-            st.dataframe(df_rf[['codigo_full', 'natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), width='stretch')
+            st.dataframe(df_rf[['categoria', 'codigo_full', 'natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), width='stretch')
 
 with tab2:
+    # Mantendo a despesa conforme solicitado (já estava certa)
     if not df_desp.empty:
         f1, f2, f3 = st.columns(3)
         ms_d = f1.multiselect("Meses:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msd")
@@ -155,13 +159,6 @@ with tab2:
             m_max = max(ms_d)
             v_aut = df_desp[df_desp['mes'] == m_max].groupby(['uo','funcao','subfuncao','programa','projeto','natureza','fonte'])['cred_autorizado'].max().sum()
             ve, vl, vp = df_f['empenhado'].sum(), df_f['liquidado'].sum(), df_f['pago'].sum()
-            
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Créd. Autorizado", f"R$ {v_aut:,.2f}")
-            k2.metric("Empenhado", f"R$ {ve:,.2f}")
-            k3.metric("Liquidado", f"R$ {vl:,.2f}")
-            k4.metric("Pago", f"R$ {vp:,.2f}")
-            
-            st.dataframe(df_f[['programa', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
-                'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'
-            }), width='stretch')
+            k1.metric("Créd. Autorizado", f"R$ {v_aut:,.2f}"); k2.metric("Empenhado", f"R$ {ve:,.2f}"); k3.metric("Liquidado", f"R$ {vl:,.2f}"); k4.metric("Pago", f"R$ {vp:,.2f}")
+            st.dataframe(df_f[['programa', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'}), width='stretch')
