@@ -79,27 +79,23 @@ with st.sidebar:
         conn.commit(); conn.close(); inicializar_banco(); st.rerun()
 
 # --- FUNÇÃO DE CÁLCULO INCREMENTAL ---
-def calcular_incremental(df, colunas_acumuladas, colunas_fixas):
+def calcular_incremental(df, colunas_acumuladas):
     if df.empty: return df
     df = df.sort_values(by=['mes'])
-    # Agrupar por natureza/chave única para subtrair corretamente
     chaves = ['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte'] if 'uo' in df.columns else ['codigo_full']
-    
-    # Criar uma cópia para o resultado
     df_res = df.copy()
     
     for mes in sorted(df['mes'].unique()):
         if mes > df['mes'].min():
-            for chave, grupo in df.groupby(chaves):
+            for _, grupo in df.groupby(chaves):
                 val_atual = grupo[grupo['mes'] == mes]
-                val_anterior = grupo[grupo['mes'] < mes].sort_values('mes').last('1D') # Pega o mês imediatamente anterior disponível
+                val_anterior = grupo[grupo['mes'] < mes].sort_values('mes', ascending=False).head(1)
                 
                 if not val_atual.empty and not val_anterior.empty:
                     idx = val_atual.index[0]
                     for col in colunas_acumuladas:
-                        # Cálculo: Atual - Anterior
                         incremental = val_atual[col].values[0] - val_anterior[col].values[0]
-                        df_res.at[idx, col] = max(0, incremental) # Evita números negativos por erros de arredondamento
+                        df_res.at[idx, col] = max(0, incremental)
     return df_res
 
 # --- CARGA E CÁLCULO ---
@@ -108,9 +104,8 @@ df_rec_raw = pd.read_sql("SELECT * FROM receitas", conn)
 df_desp_raw = pd.read_sql("SELECT * FROM despesas", conn)
 conn.close()
 
-# Aplicar lógica incremental
-df_rec_inc = calcular_incremental(df_rec_raw, ['realizado'], ['orcado'])
-df_desp_inc = calcular_incremental(df_desp_raw, ['empenhado', 'liquidado', 'pago'], ['orcado_inicial', 'cred_autorizado'])
+df_rec_inc = calcular_incremental(df_rec_raw, ['realizado'])
+df_desp_inc = calcular_incremental(df_desp_raw, ['empenhado', 'liquidado', 'pago'])
 
 tab1, tab2, tab3 = st.tabs(["📊 Receitas", "💸 Despesas", "⚖️ Confronto"])
 
@@ -127,45 +122,47 @@ with tab1:
         
         if not df_rf.empty:
             v_real = df_rf['realizado'].sum()
-            # Orçado sempre pega o último mês selecionado (sem subtrair)
-            mes_max = df_rf['mes'].max()
-            v_orc = df_rf[df_rf['mes'] == mes_max].groupby(['ano', 'codigo_full'])['orcado'].last().sum()
+            v_orc = df_rf[df_rf['mes'] == df_rf['mes'].max()].groupby(['ano', 'codigo_full'])['orcado'].last().sum()
             
             k1, k2, k3 = st.columns(3)
             k1.metric("Orçado (Atual)", f"R$ {v_orc:,.2f}")
-            k2.metric("Realizado (Soma Meses)", f"R$ {v_real:,.2f}")
+            k2.metric("Realizado (Soma)", f"R$ {v_real:,.2f}")
             k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
 
             df_g = df_rf.groupby(['ano', 'mes'])[['realizado']].sum().reset_index()
-            df_g['label'] = df_g.apply(lambda x: f"{MESES_NOMES[int(x['mes'])-1]}", axis=1)
-            st.plotly_chart(go.Figure(data=[go.Bar(x=df_g['label'], y=df_g['realizado'], marker_color='#2E7D32')]), use_container_width=True)
-            st.dataframe(df_rf[['natureza', 'realizado', 'orcado']].style.format({'realizado': '{:,.2f}', 'orcado': '{:,.2f}'}), use_container_width=True)
+            st.plotly_chart(go.Figure(data=[go.Bar(x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]), y=df_g['realizado'], marker_color='#2E7D32')]), use_container_width=True)
+            # FORMATAÇÃO CORRIGIDA POR COLUNA
+            st.dataframe(df_rf[['natureza', 'realizado', 'orcado']].style.format({
+                'realizado': '{:,.2f}', 'orcado': '{:,.2f}'
+            }), use_container_width=True)
 
 # --- ABA 2: DESPESAS ---
 with tab2:
     if not df_desp_inc.empty:
-        f1, f2, f3, f4 = st.columns([1, 1, 2, 2])
+        f1, f2, f3, f4, f5, f6 = st.columns(6)
         anos_d = f1.multiselect("Anos:", sorted(df_desp_inc['ano'].unique()), default=df_desp_inc['ano'].unique(), key="ad")
         meses_d = f2.multiselect("Meses:", sorted(df_desp_inc['mes'].unique()), default=df_desp_inc['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="md")
         func_sel = f3.multiselect("Função:", sorted(df_desp_inc['funcao'].unique()))
-        nat_sel = f4.multiselect("Natureza:", sorted(df_desp_inc['natureza'].unique()))
+        sub_sel = f4.multiselect("Subfunção:", sorted(df_desp_inc['subfuncao'].unique()))
+        font_sel = f5.multiselect("Fonte:", sorted(df_desp_inc['fonte'].unique()))
+        nat_sel = f6.multiselect("Natureza:", sorted(df_desp_inc['natureza'].unique()))
         
         df_df = df_desp_inc[(df_desp_inc['ano'].isin(anos_d)) & (df_desp_inc['mes'].isin(meses_d))]
         if func_sel: df_df = df_df[df_df['funcao'].isin(func_sel)]
+        if sub_sel: df_df = df_df[df_df['subfuncao'].isin(sub_sel)]
+        if font_sel: df_df = df_df[df_df['fonte'].isin(font_sel)]
         if nat_sel: df_df = df_df[df_df['natureza'].isin(nat_sel)]
 
         if not df_df.empty:
-            mes_max_d = df_df['mes'].max()
-            v_autorizado = df_df[df_df['mes'] == mes_max_d]['cred_autorizado'].sum()
-            v_emp = df_df['empenhado'].sum()
-            v_liq = df_df['liquidado'].sum()
-            v_pag = df_df['pago'].sum()
+            mes_m = df_df['mes'].max()
+            v_aut = df_df[df_df['mes'] == mes_m]['cred_autorizado'].sum()
+            v_emp, v_liq, v_pag = df_df['empenhado'].sum(), df_df['liquidado'].sum(), df_df['pago'].sum()
 
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Créd. Autorizado (Atual)", f"R$ {v_autorizado:,.2f}")
-            k2.metric("Empenhado (Soma)", f"R$ {v_emp:,.2f}")
-            k3.metric("Liquidado (Soma)", f"R$ {v_liq:,.2f}")
-            k4.metric("Pago (Soma)", f"R$ {v_pag:,.2f}")
+            k1.metric("Créd. Autorizado", f"R$ {v_aut:,.2f}")
+            k2.metric("Empenhado", f"R$ {v_emp:,.2f}")
+            k3.metric("Liquidado", f"R$ {v_liq:,.2f}")
+            k4.metric("Pago", f"R$ {v_pag:,.2f}")
             
             fig = go.Figure(data=[
                 go.Bar(name='Empenhado', x=['Total'], y=[v_emp], marker_color='#A9A9A9'),
@@ -173,7 +170,10 @@ with tab2:
                 go.Bar(name='Pago', x=['Total'], y=[v_pag], marker_color='#2E7D32')
             ])
             st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(df_df[['funcao', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format('{:,.2f}'), use_container_width=True)
+            # FORMATAÇÃO CORRIGIDA POR COLUNA
+            st.dataframe(df_df[['funcao', 'subfuncao', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
+                'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'
+            }), use_container_width=True)
 
 # --- ABA 3: CONFRONTO ---
 with tab3:
@@ -181,7 +181,7 @@ with tab3:
         tr = df_rf['realizado'].sum() if not df_rf.empty else 0
         tp = df_df['pago'].sum() if not df_df.empty else 0
         te = df_df['empenhado'].sum() if not df_df.empty else 0
-        st.subheader("⚖️ Confronto do Período Selecionado")
+        st.subheader("⚖️ Confronto do Período")
         m1, m2 = st.columns(2)
         m1.info(f"**Superávit Financeiro:** R$ {tr - tp:,.2f}")
         m2.warning(f"**Superávit Orçamentário:** R$ {tr - te:,.2f}")
