@@ -25,7 +25,7 @@ def inicializar_banco():
 
 def limpar_f(v):
     if pd.isna(v) or v == "" or v == "-": return 0.0
-    if isinstance(v, str): v = str(v).replace('.', '').replace(',', '.')
+    v = str(v).replace('.', '').replace(',', '.')
     try: return float(v)
     except: return 0.0
 
@@ -68,16 +68,16 @@ with st.sidebar:
                 df = pd.read_excel(arquivo, skiprows=6)
                 df.columns = df.columns.str.strip().str.upper()
                 dados = []
+                # Filtro de segurança: ignora UG=0 (subtotais) para não triplicar valores
                 for _, row in df.iterrows():
-                    uo = str(row.get('UO', '')).strip()
-                    ug = str(row.get('UG', '')).strip()
-                    elem = limpar_f(row.get('ELEMENTO', 0))
-                    # SÓ IMPORTA SE: Tiver UO, UG não for 0 (subtotal) e ELEMENTO for detalhe (>0)
-                    if uo != "" and uo != "nan" and ug != "0" and elem > 0:
+                    uo, ug = str(row.get('UO', '')).strip(), str(row.get('UG', '')).strip()
+                    if uo != "" and uo != "nan" and ug != "0" and ug != "":
                         dados.append((m_final, ano_ref, uo, str(row.get('FUNÇÃO', '')), str(row.get('SUBFUNÇÃO', '')), str(row.get('PROGRAMA', '')), str(row.get('PAOE', '')), str(row.get('NATUREZA DESPESA', '')), str(row.get('FONTE', '')), limpar_f(row.get('ORÇADO INICIAL', 0)), limpar_f(row.get('CRÉDITO AUTORIZADO', 0)), limpar_f(row.get('EMPENHADO', 0)), limpar_f(row.get('LIQUIDADO', 0)), limpar_f(row.get('PAGO', 0))))
                 conn.execute("DELETE FROM despesas WHERE mes=? AND ano=?", (m_final, ano_ref))
                 conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
-            conn.commit(); st.success(f"✅ Importado: {MESES_NOMES[m_final-1]}"); st.rerun()
+            conn.commit()
+            st.success(f"✅ Importado com sucesso: {MESES_NOMES[m_final-1]}")
+            st.rerun()
         except Exception as e: st.error(f"Erro: {e}")
         finally: conn.close()
 
@@ -96,7 +96,7 @@ tab1, tab2 = st.tabs(["📊 Receitas", "💸 Despesas"])
 with tab1:
     if not df_rec.empty:
         c1, c2, c3 = st.columns([1, 1, 2])
-        ms_r = c2.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1])
+        ms_r = c2.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="ms_r")
         br = c3.text_input("Natureza (Contém):", key="br")
         df_rf = df_rec[df_rec['mes'].isin(ms_r)]
         if br: df_rf = df_rf[df_rf['natureza'].str.contains(br, case=False, na=False)]
@@ -105,22 +105,22 @@ with tab1:
 
 with tab2:
     if not df_desp.empty:
-        # Filtros aprovados
         f1, f2, f3 = st.columns(3)
-        ms_d = f1.multiselect("Meses:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="md_d")
+        ms_d = f1.multiselect("Meses Selecionados:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="ms_d")
         ps = f2.multiselect("Programa:", sorted(df_desp['programa'].unique()))
         bd = f3.text_input("Natureza (Contém):", key="bd")
         
-        df_df = df_desp[df_desp['mes'].isin(ms_d)]
-        if ps: df_df = df_df[df_df['programa'].isin(ps)]
-        if bd: df_df = df_df[df_df['natureza'].str.contains(bd, case=False, na=False)]
+        df_f = df_desp[df_desp['mes'].isin(ms_d)]
+        if ps: df_f = df_f[df_f['programa'].isin(ps)]
+        if bd: df_f = df_f[df_f['natureza'].str.contains(bd, case=False, na=False)]
         
-        if not df_df.empty:
-            # Crédito: No FIP 616 detalhado, somamos o Crédito das linhas de detalhe no último mês selecionado
-            # (Essa lógica evita a duplicidade dos subtotais da UO)
-            m_max = df_df['mes'].max()
-            v_aut = df_df[df_df['mes'] == m_max]['cred_autorizado'].sum()
-            ve, vl, vp = df_df['empenhado'].sum(), df_df['liquidado'].sum(), df_df['pago'].sum()
+        if not df_f.empty:
+            # Lógica do Crédito Autorizado: Pega a foto do último mês selecionado para não somar orçamentos
+            m_ultima = max(ms_d) if ms_d else df_desp['mes'].max()
+            v_aut = df_desp[df_desp['mes'] == m_ultima]['cred_autorizado'].sum()
+            
+            # Execução (Soma apenas os meses filtrados)
+            ve, vl, vp = df_f['empenhado'].sum(), df_f['liquidado'].sum(), df_f['pago'].sum()
             
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("Créd. Autorizado", f"R$ {v_aut:,.2f}")
@@ -128,6 +128,7 @@ with tab2:
             k3.metric("Liquidado", f"R$ {vl:,.2f}")
             k4.metric("Pago", f"R$ {vp:,.2f}")
             
-            st.dataframe(df_df[['programa', 'projeto', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
+            # Formatação manual de colunas numéricas (evita erro de ValueError na Natureza)
+            st.dataframe(df_f[['programa', 'projeto', 'fonte', 'natureza', 'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
                 'cred_autorizado': '{:,.2f}', 'empenhado': '{:,.2f}', 'liquidado': '{:,.2f}', 'pago': '{:,.2f}'
             }), use_container_width=True)
