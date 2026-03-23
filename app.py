@@ -10,7 +10,12 @@ st.set_page_config(page_title="FIPLAN - GESTÃO INTEGRADA", layout="wide")
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 MESES_MAPA = {"JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4, "MAIO": 5, "JUNHO": 6, "JULHO": 7, "AGOSTO": 8, "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12}
 
-st.markdown("<style>[data-testid='stMetricValue'] { font-size: 1.4rem !important; font-weight: 700; }</style>", unsafe_allow_html=True)
+st.markdown("""
+    <style>
+    [data-testid="stMetricValue"] { font-size: 1.4rem !important; font-weight: 700; }
+    [data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
 def inicializar_banco():
     conn = sqlite3.connect(DB_NAME)
@@ -54,25 +59,24 @@ with st.sidebar:
         conn = sqlite3.connect(DB_NAME)
         try:
             if tipo_dado == "Receita":
+                # FIP 729: Receita
                 df = pd.read_excel(arquivo, skiprows=7)
                 dados = []
                 for _, row in df.iterrows():
                     cod = str(row.iloc[0]).strip().replace('"', '')
-                    # REGRA MESTRE RECEITA (FIP 729): 
-                    # 1. Ignora linhas que terminam em .0.0.00 (Sintéticas)
-                    # 2. Se o código começar com 6, inverte o sinal (Dedução)
-                    if re.match(r'^\d', cod) and not cod.endswith('.0.0.00'):
-                        valor = limpar_f(row.iloc[6]) # Coluna REALIZAÇÃO NO MÊS
+                    # REGRA SOLICITADA: Somente códigos onde o último dígito é diferente de zero (Analíticas)
+                    if re.match(r'^\d', cod) and cod[-1] != '0':
+                        valor = limpar_f(row.iloc[6]) # Coluna Realização NO MÊS
+                        # REGRA SOLICITADA: Começou com 6 é dedutiva
                         if cod.startswith('6'):
                             valor = -abs(valor)
                         
                         dados.append((m_final, 2026, cod, str(row.iloc[1]).replace('"', ''), 
                                      limpar_f(row.iloc[3]), valor, limpar_f(row.iloc[5])))
-                
                 conn.execute("DELETE FROM receitas WHERE mes=?", (m_final,))
                 conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?)", dados)
             else:
-                # DESPESA FIP 616
+                # FIP 616: Despesa (Lógica centavo a centavo)
                 df = pd.read_excel(arquivo, skiprows=6)
                 df.columns = df.columns.str.strip().str.upper()
                 dados = []
@@ -111,15 +115,15 @@ tab1, tab2 = st.tabs(["📊 Receitas", "💸 Despesas"])
 
 with tab1:
     if not df_rec.empty:
-        c1, c2 = st.columns([1, 2])
-        ms_r = c1.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msr")
-        br = c2.text_input("Natureza (Contém):", key="br_r", placeholder="Busca na receita...")
+        c1, c2, c3 = st.columns([1, 1, 2])
+        anos_r = c1.multiselect("Anos:", sorted(df_rec['ano'].unique()), default=df_rec['ano'].unique(), key="ar")
+        ms_r = c2.multiselect("Meses:", sorted(df_rec['mes'].unique()), default=df_rec['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msr")
+        br = c3.text_input("Natureza (Contém):", key="br_r")
         
-        df_rf = df_rec[df_rec['mes'].isin(ms_r)]
+        df_rf = df_rec[(df_rec['mes'].isin(ms_r)) & (df_rec['ano'].isin(anos_r))]
         if br: df_rf = df_rf[df_rf['natureza'].str.contains(br, case=False, na=False)]
         
         if not df_rf.empty:
-            # MÉTRICAS
             v_real = df_rf['realizado'].sum()
             v_orc = df_rec[df_rec['mes'] == max(ms_r)]['orcado'].sum()
             
@@ -128,7 +132,7 @@ with tab1:
             k2.metric("Líquido Arrecadado", f"R$ {v_real:,.2f}")
             k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc != 0 else 0):.1f}%")
 
-            # Gráfico Verde de Barras
+            # Gráfico Verde de Barras (Receita)
             df_g = df_rf.groupby(['mes'])[['realizado']].sum().reset_index()
             fig = go.Figure(data=[go.Bar(x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]), y=df_g['realizado'], marker_color='#2E7D32')])
             fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
@@ -138,11 +142,10 @@ with tab1:
 
 with tab2:
     if not df_desp.empty:
-        # (Mantendo a lógica centavo a centavo da despesa)
         f1, f2, f3 = st.columns(3)
-        ms_d = f1.multiselect("Meses Selecionados:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msd")
+        ms_d = f1.multiselect("Meses:", sorted(df_desp['mes'].unique()), default=df_desp['mes'].unique(), format_func=lambda x: MESES_NOMES[x-1], key="msd")
         ps = f2.multiselect("Programa:", sorted(df_desp['programa'].unique()))
-        bd = f3.text_input("Natureza (Contém):", placeholder="Ex: 3390", key="bd_d")
+        bd = f3.text_input("Natureza (Contém):", key="bd_d")
         
         df_f = df_desp[df_desp['mes'].isin(ms_d)]
         if ps: df_f = df_f[df_f['programa'].isin(ps)]
