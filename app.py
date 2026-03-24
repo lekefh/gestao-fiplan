@@ -4,6 +4,7 @@ import sqlite3
 import plotly.graph_objects as go
 import re
 import io
+import unicodedata
 
 # --- CONFIGURAÇÃO ---
 DB_NAME = 'dados_gestao_integrada.db'
@@ -194,6 +195,164 @@ def somar_campos(df, cols):
         return {c: 0.0 for c in cols}
     return {c: float(df[c].sum()) for c in cols}
 
+def normalizar_texto_cabecalho(txt):
+    txt = "" if pd.isna(txt) else str(txt)
+    txt = unicodedata.normalize("NFKD", txt)
+    txt = "".join(c for c in txt if not unicodedata.combining(c))
+    return txt.upper().strip()
+
+def extrair_mes_ano_arquivo(arquivo):
+    try:
+        arquivo.seek(0)
+    except:
+        pass
+
+    cab = pd.read_excel(arquivo, header=None, nrows=6)
+
+    textos = []
+
+    # Prioriza a linha 4 da planilha (índice 3 no pandas)
+    if len(cab) > 3:
+        linha4 = " ".join(cab.iloc[3].fillna("").astype(str).tolist())
+        textos.append(linha4)
+
+    # Fallback: usa também as demais primeiras linhas
+    for i in range(min(len(cab), 6)):
+        linha = " ".join(cab.iloc[i].fillna("").astype(str).tolist())
+        textos.append(linha)
+
+    texto = " | ".join(textos)
+    texto_norm = normalizar_texto_cabecalho(texto)
+
+    mes_encontrado = None
+    for nome_mes, num_mes in MESES_MAPA.items():
+        if normalizar_texto_cabecalho(nome_mes) in texto_norm:
+            mes_encontrado = num_mes
+            break
+
+    ano_match = re.search(r'\b(20\d{2})\b', texto_norm)
+    ano_encontrado = int(ano_match.group(1)) if ano_match else None
+
+    try:
+        arquivo.seek(0)
+    except:
+        pass
+
+    if mes_encontrado is None or ano_encontrado is None:
+        raise ValueError(
+            "Não foi possível identificar mês e ano no cabeçalho do arquivo. Verifique a linha 4 da planilha."
+        )
+
+    return mes_encontrado, ano_encontrado
+
+def criar_formatos_excel(workbook):
+    base = {
+        'font_name': 'Arial',
+        'font_size': 8
+    }
+
+    fmt_header = workbook.add_format({
+        **base,
+        'bold': True,
+        'align': 'center',
+        'valign': 'vcenter',
+        'border': 1,
+        'bg_color': '#BFBFBF',
+        'text_wrap': True
+    })
+
+    fmt_group = workbook.add_format({
+        **base,
+        'bold': True,
+        'border': 1,
+        'bg_color': '#D9D9D9'
+    })
+
+    fmt_subgroup = workbook.add_format({
+        **base,
+        'bold': True,
+        'border': 1,
+        'bg_color': '#EDEDED'
+    })
+
+    fmt_item = workbook.add_format({
+        **base,
+        'border': 1,
+        'indent': 1
+    })
+
+    fmt_subitem = workbook.add_format({
+        **base,
+        'border': 1,
+        'indent': 2
+    })
+
+    fmt_total_text = workbook.add_format({
+        **base,
+        'bold': True,
+        'border': 1,
+        'bg_color': '#EDEDED'
+    })
+
+    fmt_money = workbook.add_format({
+        **base,
+        'border': 1,
+        'num_format': '#,##0.00'
+    })
+
+    fmt_money_bold = workbook.add_format({
+        **base,
+        'bold': True,
+        'border': 1,
+        'bg_color': '#EDEDED',
+        'num_format': '#,##0.00'
+    })
+
+    fmt_money_total = workbook.add_format({
+        **base,
+        'bold': True,
+        'border': 1,
+        'bg_color': '#EDEDED',
+        'num_format': '#,##0.00'
+    })
+
+    fmt_pct = workbook.add_format({
+        **base,
+        'border': 1,
+        'num_format': '0.00%'
+    })
+
+    fmt_pct_bold = workbook.add_format({
+        **base,
+        'bold': True,
+        'border': 1,
+        'bg_color': '#EDEDED',
+        'num_format': '0.00%'
+    })
+
+    fmt_pct_total = workbook.add_format({
+        **base,
+        'bold': True,
+        'border': 1,
+        'bg_color': '#EDEDED',
+        'num_format': '0.00%'
+    })
+
+    return {
+        'fmt_header': fmt_header,
+        'fmt_group': fmt_group,
+        'fmt_subgroup': fmt_subgroup,
+        'fmt_item': fmt_item,
+        'fmt_subitem': fmt_subitem,
+        'fmt_total_text': fmt_total_text,
+        'fmt_money': fmt_money,
+        'fmt_money_bold': fmt_money_bold,
+        'fmt_money_total': fmt_money_total,
+        'fmt_pct': fmt_pct,
+        'fmt_pct_bold': fmt_pct_bold,
+        'fmt_pct_total': fmt_pct_total
+    }
+
 # ----------------------------
 # BASES DOS RELATÓRIOS LRF
 # ----------------------------
@@ -204,12 +363,11 @@ def preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
             'no_bimestre', 'ate_bimestre', 'saldo', 'perc_bim', 'perc_ate'
         ])
 
-    # EXCLUI AS DEDUÇÕES (códigos iniciados por 9) da base principal do anexo
+    # Exclui as deduções (códigos iniciados por 9) da base principal do anexo
     df_base = df_rec[~df_rec['codigo_full'].astype(str).str.startswith('9')].copy()
 
     chaves = ['categoria', 'natureza']
 
-    # PREVISÃO ATUALIZADA = ORÇADO ATUALIZADO (orcado)
     df_orcado = (
         df_base[df_base['mes'].isin(meses_ate_agora)]
         .groupby(chaves, as_index=False)
@@ -217,8 +375,6 @@ def preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
         .rename(columns={'orcado': 'previsao_atualizada'})
     )
 
-    # Enquanto não houver coluna separada de previsão inicial,
-    # usa o mesmo valor da previsão atualizada
     df_orcado['previsao_inicial'] = df_orcado['previsao_atualizada']
 
     df_bim = (
@@ -242,7 +398,6 @@ def preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
         .fillna(0)
     )
 
-    # SALDO A REALIZAR = PREVISÃO ATUALIZADA - REALIZADO ATÉ O BIMESTRE
     base['saldo'] = base['previsao_atualizada'] - base['ate_bimestre']
     base['perc_bim'] = base.apply(lambda r: safe_div(r['no_bimestre'], r['previsao_atualizada']), axis=1)
     base['perc_ate'] = base.apply(lambda r: safe_div(r['ate_bimestre'], r['previsao_atualizada']), axis=1)
@@ -410,34 +565,16 @@ def gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora):
         worksheet = workbook.add_worksheet('Anexo_I')
         writer.sheets['Anexo_I'] = worksheet
 
-        fmt_header = workbook.add_format({
-            'bold': True, 'align': 'center', 'valign': 'vcenter',
-            'border': 1, 'bg_color': '#BFBFBF', 'text_wrap': True
-        })
-        fmt_group = workbook.add_format({
-            'bold': True, 'border': 1, 'bg_color': '#D9D9D9'
-        })
-        fmt_subgroup = workbook.add_format({
-            'bold': True, 'border': 1
-        })
-        fmt_item = workbook.add_format({
-            'border': 1, 'indent': 1
-        })
-        fmt_money = workbook.add_format({
-            'border': 1, 'num_format': '#,##0.00'
-        })
-        fmt_money_bold = workbook.add_format({
-            'bold': True, 'border': 1, 'bg_color': '#EDEDED', 'num_format': '#,##0.00'
-        })
-        fmt_pct = workbook.add_format({
-            'border': 1, 'num_format': '0.00%'
-        })
-        fmt_pct_bold = workbook.add_format({
-            'bold': True, 'border': 1, 'bg_color': '#EDEDED', 'num_format': '0.00%'
-        })
-        fmt_text_total = workbook.add_format({
-            'bold': True, 'border': 1, 'bg_color': '#EDEDED'
-        })
+        formatos = criar_formatos_excel(workbook)
+        fmt_header = formatos['fmt_header']
+        fmt_group = formatos['fmt_group']
+        fmt_subgroup = formatos['fmt_subgroup']
+        fmt_item = formatos['fmt_item']
+        fmt_total_text = formatos['fmt_total_text']
+        fmt_money = formatos['fmt_money']
+        fmt_money_bold = formatos['fmt_money_bold']
+        fmt_pct = formatos['fmt_pct']
+        fmt_pct_bold = formatos['fmt_pct_bold']
 
         worksheet.set_column('A:A', 42)
         worksheet.set_column('B:C', 18)
@@ -516,7 +653,6 @@ def gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora):
                 if df_c.empty:
                     continue
 
-                    # nunca entra aqui se vazio, apenas para clareza
                 soma_c = {
                     'previsao_inicial': float(df_c['previsao_inicial'].sum()),
                     'previsao_atualizada': float(df_c['previsao_atualizada'].sum()),
@@ -571,7 +707,7 @@ def gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora):
         ]
 
         for descricao, vals in linhas_finais:
-            worksheet.write(row, 0, descricao, fmt_text_total)
+            worksheet.write(row, 0, descricao, fmt_total_text)
             worksheet.write_number(row, 1, vals.get('previsao_inicial', 0), fmt_money_bold)
             worksheet.write_number(row, 2, vals.get('previsao_atualizada', 0), fmt_money_bold)
             worksheet.write_number(row, 3, vals.get('no_bimestre', 0), fmt_money_bold)
@@ -688,16 +824,14 @@ def gerar_excel_anexo1a(df_desp, df_rec, meses_bim, meses_ate_agora):
         worksheet = workbook.add_worksheet('Anexo_IA')
         writer.sheets['Anexo_IA'] = worksheet
 
-        fmt_header = workbook.add_format({
-            'bold': True, 'align': 'center', 'valign': 'vcenter',
-            'border': 1, 'bg_color': '#BFBFBF', 'text_wrap': True
-        })
-        fmt_group = workbook.add_format({'bold': True, 'border': 1})
-        fmt_item = workbook.add_format({'border': 1, 'indent': 1})
-        fmt_subitem = workbook.add_format({'border': 1, 'indent': 2})
-        fmt_total_text = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#EDEDED'})
-        fmt_money = workbook.add_format({'border': 1, 'num_format': '#,##0.00'})
-        fmt_money_total = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#EDEDED', 'num_format': '#,##0.00'})
+        formatos = criar_formatos_excel(workbook)
+        fmt_header = formatos['fmt_header']
+        fmt_group = formatos['fmt_group']
+        fmt_item = formatos['fmt_item']
+        fmt_subitem = formatos['fmt_subitem']
+        fmt_total_text = formatos['fmt_total_text']
+        fmt_money = formatos['fmt_money']
+        fmt_money_total = formatos['fmt_money_total']
 
         worksheet.set_column('A:A', 48)
         worksheet.set_column('B:C', 16)
@@ -835,17 +969,15 @@ def gerar_excel_anexo2(df_desp, meses_bim, meses_ate_agora):
         worksheet = workbook.add_worksheet('Anexo_II')
         writer.sheets['Anexo_II'] = worksheet
 
-        fmt_header = workbook.add_format({
-            'bold': True, 'align': 'center', 'valign': 'vcenter',
-            'border': 1, 'bg_color': '#BFBFBF', 'text_wrap': True
-        })
-        fmt_group = workbook.add_format({'bold': True, 'border': 1})
-        fmt_item = workbook.add_format({'border': 1, 'indent': 1})
-        fmt_total_text = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#EDEDED'})
-        fmt_money = workbook.add_format({'border': 1, 'num_format': '#,##0.00'})
-        fmt_money_total = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#EDEDED', 'num_format': '#,##0.00'})
-        fmt_pct = workbook.add_format({'border': 1, 'num_format': '0.00%'})
-        fmt_pct_total = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#EDEDED', 'num_format': '0.00%'})
+        formatos = criar_formatos_excel(workbook)
+        fmt_header = formatos['fmt_header']
+        fmt_group = formatos['fmt_group']
+        fmt_item = formatos['fmt_item']
+        fmt_total_text = formatos['fmt_total_text']
+        fmt_money = formatos['fmt_money']
+        fmt_money_total = formatos['fmt_money_total']
+        fmt_pct = formatos['fmt_pct']
+        fmt_pct_total = formatos['fmt_pct_total']
 
         worksheet.set_column('A:A', 32)
         worksheet.set_column('B:C', 16)
@@ -916,127 +1048,128 @@ with st.sidebar:
     arquivo = st.file_uploader(f"Arquivo {tipo_dado}", type=["xlsx"])
 
     if arquivo and st.button("🚀 Processar Dados"):
-        m_final = 1
-        df_scan = pd.read_excel(arquivo, nrows=10, header=None)
+        try:
+            m_final, ano_final = extrair_mes_ano_arquivo(arquivo)
+            st.info(f"Competência detectada: {MESES_NOMES[m_final - 1]}/{ano_final}")
 
-        for r in range(len(df_scan)):
-            for celula in df_scan.iloc[r]:
-                for nome, num in MESES_MAPA.items():
-                    if nome in str(celula).upper():
-                        m_final = num
+            conn = sqlite3.connect(DB_NAME)
 
-        conn = sqlite3.connect(DB_NAME)
+            if tipo_dado == "Receita":
+                arquivo.seek(0)
+                df = pd.read_excel(arquivo, skiprows=7)
+                dados = []
 
-        if tipo_dado == "Receita":
-            df = pd.read_excel(arquivo, skiprows=7)
-            dados = []
+                for _, row in df.iterrows():
+                    cod = str(row.iloc[0]).strip().replace('"', '')
 
-            for _, row in df.iterrows():
-                cod = str(row.iloc[0]).strip().replace('"', '')
+                    if re.match(r'^\d', cod) and cod[-1] != '0':
+                        real = limpar_f(row.iloc[6])
+                        if cod.startswith('9'):
+                            real = -abs(real)
 
-                if re.match(r'^\d', cod) and cod[-1] != '0':
-                    real = limpar_f(row.iloc[6])
-                    if cod.startswith('9'):
-                        real = -abs(real)
+                        cur = conn.execute("SELECT categoria FROM receitas WHERE codigo_full = ?", (cod,))
+                        r_cat = cur.fetchone()
+                        cat_atual = r_cat[0] if r_cat else "Não Classificada"
 
-                    cur = conn.execute("SELECT categoria FROM receitas WHERE codigo_full = ?", (cod,))
-                    r_cat = cur.fetchone()
-                    cat_atual = r_cat[0] if r_cat else "Não Classificada"
+                        dados.append((
+                            m_final,
+                            ano_final,
+                            cod,
+                            str(row.iloc[1]).replace('"', ''),
+                            limpar_f(row.iloc[3]),
+                            real,
+                            limpar_f(row.iloc[5]),
+                            cat_atual
+                        ))
 
-                    dados.append((
-                        m_final,
-                        2026,
-                        cod,
-                        str(row.iloc[1]).replace('"', ''),
-                        limpar_f(row.iloc[3]),
-                        real,
-                        limpar_f(row.iloc[5]),
-                        cat_atual
-                    ))
+                conn.execute("DELETE FROM receitas WHERE ano = ? AND mes = ?", (ano_final, m_final))
+                conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?)", dados)
 
-            conn.execute("DELETE FROM receitas WHERE ano = ? AND mes = ?", (2026, m_final))
-            conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?)", dados)
+            else:
+                arquivo.seek(0)
+                df = pd.read_excel(arquivo, skiprows=6)
+                df.columns = df.columns.str.strip().str.upper()
+                linhas = []
 
-        else:
-            df = pd.read_excel(arquivo, skiprows=6)
-            df.columns = df.columns.str.strip().str.upper()
-            linhas = []
+                for _, row in df.iterrows():
+                    uo = normalizar_chave(row.get('UO', ''))
+                    ug = normalizar_chave(row.get('UG', ''))
 
-            for _, row in df.iterrows():
-                uo = normalizar_chave(row.get('UO', ''))
-                ug = normalizar_chave(row.get('UG', ''))
+                    if uo != "":
+                        elem = limpar_f(row.get('ELEMENTO', 0))
+                        tem_execucao = (ug != '0' and elem != 0)
 
-                if uo != "":
-                    elem = limpar_f(row.get('ELEMENTO', 0))
-                    tem_execucao = (ug != '0' and elem != 0)
+                        v_emp_cum = limpar_f(row.get('EMPENHADO', 0)) if tem_execucao else 0.0
+                        v_liq_cum = limpar_f(row.get('LIQUIDADO', 0)) if tem_execucao else 0.0
+                        v_pag_cum = limpar_f(row.get('PAGO', 0)) if tem_execucao else 0.0
 
-                    v_emp_cum = limpar_f(row.get('EMPENHADO', 0)) if tem_execucao else 0.0
-                    v_liq_cum = limpar_f(row.get('LIQUIDADO', 0)) if tem_execucao else 0.0
-                    v_pag_cum = limpar_f(row.get('PAGO', 0)) if tem_execucao else 0.0
+                        linhas.append({
+                            'uo': uo,
+                            'funcao': normalizar_chave(row.get('FUNÇÃO', '')),
+                            'subfuncao': normalizar_chave(row.get('SUBFUNÇÃO', '')),
+                            'programa': normalizar_chave(row.get('PROGRAMA', '')),
+                            'projeto': normalizar_chave(row.get('PAOE', '')),
+                            'natureza': normalizar_chave(row.get('NATUREZA DESPESA', '')),
+                            'fonte': normalizar_chave(row.get('FONTE', '')),
+                            'orcado_inicial': limpar_f(row.get('ORÇADO INICIAL', 0)),
+                            'cred_autorizado': limpar_f(row.get('CRÉDITO AUTORIZADO', 0)),
+                            'empenhado_cum': v_emp_cum,
+                            'liquidado_cum': v_liq_cum,
+                            'pago_cum': v_pag_cum
+                        })
 
-                    linhas.append({
-                        'uo': uo,
-                        'funcao': normalizar_chave(row.get('FUNÇÃO', '')),
-                        'subfuncao': normalizar_chave(row.get('SUBFUNÇÃO', '')),
-                        'programa': normalizar_chave(row.get('PROGRAMA', '')),
-                        'projeto': normalizar_chave(row.get('PAOE', '')),
-                        'natureza': normalizar_chave(row.get('NATUREZA DESPESA', '')),
-                        'fonte': normalizar_chave(row.get('FONTE', '')),
-                        'orcado_inicial': limpar_f(row.get('ORÇADO INICIAL', 0)),
-                        'cred_autorizado': limpar_f(row.get('CRÉDITO AUTORIZADO', 0)),
-                        'empenhado_cum': v_emp_cum,
-                        'liquidado_cum': v_liq_cum,
-                        'pago_cum': v_pag_cum
+                if linhas:
+                    df_mes = pd.DataFrame(linhas)
+                    chaves = ['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte']
+
+                    df_mes = df_mes.groupby(chaves, as_index=False).agg({
+                        'orcado_inicial': 'sum',
+                        'cred_autorizado': 'sum',
+                        'empenhado_cum': 'sum',
+                        'liquidado_cum': 'sum',
+                        'pago_cum': 'sum'
                     })
 
-            if linhas:
-                df_mes = pd.DataFrame(linhas)
-                chaves = ['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte']
+                    if m_final > 1:
+                        df_ant = pd.read_sql("""
+                            SELECT
+                                uo, funcao, subfuncao, programa, projeto, natureza, fonte,
+                                SUM(empenhado) AS empenhado_ant,
+                                SUM(liquidado) AS liquidado_ant,
+                                SUM(pago) AS pago_ant
+                            FROM despesas
+                            WHERE ano = ? AND mes < ?
+                            GROUP BY uo, funcao, subfuncao, programa, projeto, natureza, fonte
+                        """, conn, params=(ano_final, m_final))
+                    else:
+                        df_ant = pd.DataFrame(columns=chaves + ['empenhado_ant', 'liquidado_ant', 'pago_ant'])
 
-                df_mes = df_mes.groupby(chaves, as_index=False).agg({
-                    'orcado_inicial': 'sum',
-                    'cred_autorizado': 'sum',
-                    'empenhado_cum': 'sum',
-                    'liquidado_cum': 'sum',
-                    'pago_cum': 'sum'
-                })
+                    df_mes = df_mes.merge(df_ant, on=chaves, how='left').fillna(0)
+                    df_mes['empenhado'] = df_mes['empenhado_cum'] - df_mes['empenhado_ant']
+                    df_mes['liquidado'] = df_mes['liquidado_cum'] - df_mes['liquidado_ant']
+                    df_mes['pago'] = df_mes['pago_cum'] - df_mes['pago_ant']
 
-                if m_final > 1:
-                    df_ant = pd.read_sql("""
-                        SELECT
-                            uo, funcao, subfuncao, programa, projeto, natureza, fonte,
-                            SUM(empenhado) AS empenhado_ant,
-                            SUM(liquidado) AS liquidado_ant,
-                            SUM(pago) AS pago_ant
-                        FROM despesas
-                        WHERE ano = 2026 AND mes < ?
-                        GROUP BY uo, funcao, subfuncao, programa, projeto, natureza, fonte
-                    """, conn, params=(m_final,))
-                else:
-                    df_ant = pd.DataFrame(columns=chaves + ['empenhado_ant', 'liquidado_ant', 'pago_ant'])
+                    dados = [
+                        (
+                            m_final, ano_final,
+                            r['uo'], r['funcao'], r['subfuncao'], r['programa'],
+                            r['projeto'], r['natureza'], r['fonte'],
+                            float(r['orcado_inicial']), float(r['cred_autorizado']),
+                            float(r['empenhado']), float(r['liquidado']), float(r['pago'])
+                        )
+                        for _, r in df_mes.iterrows()
+                    ]
 
-                df_mes = df_mes.merge(df_ant, on=chaves, how='left').fillna(0)
-                df_mes['empenhado'] = df_mes['empenhado_cum'] - df_mes['empenhado_ant']
-                df_mes['liquidado'] = df_mes['liquidado_cum'] - df_mes['liquidado_ant']
-                df_mes['pago'] = df_mes['pago_cum'] - df_mes['pago_ant']
+                    conn.execute("DELETE FROM despesas WHERE ano = ? AND mes = ?", (ano_final, m_final))
+                    conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
 
-                dados = [
-                    (
-                        m_final, 2026,
-                        r['uo'], r['funcao'], r['subfuncao'], r['programa'],
-                        r['projeto'], r['natureza'], r['fonte'],
-                        float(r['orcado_inicial']), float(r['cred_autorizado']),
-                        float(r['empenhado']), float(r['liquidado']), float(r['pago'])
-                    )
-                    for _, r in df_mes.iterrows()
-                ]
+            conn.commit()
+            conn.close()
+            st.success("Dados processados com sucesso.")
+            st.rerun()
 
-                conn.execute("DELETE FROM despesas WHERE ano = 2026 AND mes = ?", (m_final,))
-                conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
-
-        conn.commit()
-        conn.close()
-        st.rerun()
+        except Exception as e:
+            st.error(f"Erro ao processar arquivo: {e}")
 
     st.divider()
 
@@ -1171,7 +1304,7 @@ with tab1:
 
             df_orc_ref = df_base[(df_base['ano'] == ano_ref) & (df_base['mes'] == mes_ref)].copy()
 
-            if cat_sel:
+            if cat_sel
                 df_orc_ref = df_orc_ref[df_orc_ref['categoria'].isin(cat_sel)]
             if nat_sel:
                 df_orc_ref = df_orc_ref[df_orc_ref['natureza'].isin(nat_sel)]
@@ -1450,4 +1583,47 @@ with tab4:
 
         st.divider()
         st.caption("Nota: Os valores de arrecadação e execução são acumulados do início do exercício até o bimestre selecionado.")
+
+def normalizar_texto_cabecalho(txt):
+    txt = "" if pd.isna(txt) else str(txt)
+    txt = unicodedata.normalize("NFKD", txt)
+    txt = "".join(c for c in txt if not unicodedata.combining(c))
+    return txt.upper().strip()
+
+def extrair_mes_ano_arquivo(arquivo):
+    # Lê apenas as primeiras linhas do cabeçalho
+    cab = pd.read_excel(arquivo, header=None, nrows=6)
+
+    textos = []
+
+    # Prioriza a linha 4 do Excel (índice 3 no pandas)
+    if len(cab) > 3:
+        linha4 = " ".join(cab.iloc[3].fillna("").astype(str).tolist())
+        textos.append(linha4)
+
+    # Fallback: junta também as demais primeiras linhas
+    for i in range(min(len(cab), 6)):
+        linha = " ".join(cab.iloc[i].fillna("").astype(str).tolist())
+        textos.append(linha)
+
+    texto = " | ".join(textos)
+    texto_norm = normalizar_texto_cabecalho(texto)
+
+    mes_encontrado = None
+    for nome_mes, num_mes in MESES_MAPA.items():
+        if normalizar_texto_cabecalho(nome_mes) in texto_norm:
+            mes_encontrado = num_mes
+            break
+
+    ano_match = re.search(r'\b(20\d{2})\b', texto_norm)
+    ano_encontrado = int(ano_match.group(1)) if ano_match else None
+
+    if mes_encontrado is None or ano_encontrado is None:
+        raise ValueError(
+            "Não foi possível identificar mês e ano no cabeçalho do arquivo. "
+            "Verifique a linha 4 da planilha."
+        )
+
+    return mes_encontrado, ano_encontrado
+
 
