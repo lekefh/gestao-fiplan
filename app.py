@@ -84,13 +84,20 @@ st.markdown(
 # --- FUNÇÕES AUXILIARES ---
 def inicializar_banco():
     conn = sqlite3.connect(DB_NAME)
+
     conn.execute('''
         CREATE TABLE IF NOT EXISTS receitas (
-            mes INTEGER, ano INTEGER, codigo_full TEXT, natureza TEXT,
-            orcado REAL, realizado REAL, previsao REAL,
+            mes INTEGER,
+            ano INTEGER,
+            codigo_full TEXT,
+            natureza TEXT,
+            orcado REAL,
+            realizado REAL,
+            previsao REAL,
             categoria TEXT DEFAULT 'Não Classificada'
         )
     ''')
+
     try:
         conn.execute("ALTER TABLE receitas ADD COLUMN categoria TEXT DEFAULT 'Não Classificada'")
     except:
@@ -98,11 +105,23 @@ def inicializar_banco():
 
     conn.execute('''
         CREATE TABLE IF NOT EXISTS despesas (
-            mes INTEGER, ano INTEGER, uo TEXT, funcao TEXT, subfuncao TEXT,
-            programa TEXT, projeto TEXT, natureza TEXT, fonte TEXT,
-            orcado_inicial REAL, cred_autorizado REAL, empenhado REAL, liquidado REAL, pago REAL
+            mes INTEGER,
+            ano INTEGER,
+            uo TEXT,
+            funcao TEXT,
+            subfuncao TEXT,
+            programa TEXT,
+            projeto TEXT,
+            natureza TEXT,
+            fonte TEXT,
+            orcado_inicial REAL,
+            cred_autorizado REAL,
+            empenhado REAL,
+            liquidado REAL,
+            pago REAL
         )
     ''')
+
     conn.close()
 
 def limpar_f(v):
@@ -187,18 +206,17 @@ def preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
 
     chaves = ['categoria', 'natureza']
 
-    df_prev = (
+    # PREVISÃO ATUALIZADA = ORÇADO ATUALIZADO (orcado)
+    df_orcado = (
         df_rec[df_rec['mes'].isin(meses_ate_agora)]
         .groupby(chaves, as_index=False)
-        .agg({
-            'orcado': 'max',
-            'previsao': 'max'
-        })
-        .rename(columns={
-            'orcado': 'previsao_inicial',
-            'previsao': 'previsao_atualizada'
-        })
+        .agg({'orcado': 'max'})
+        .rename(columns={'orcado': 'previsao_atualizada'})
     )
+
+    # Como a base atual não separa previsão inicial da receita,
+    # usamos o mesmo valor do orçamento anual.
+    df_orcado['previsao_inicial'] = df_orcado['previsao_atualizada']
 
     df_bim = (
         df_rec[df_rec['mes'].isin(meses_bim)]
@@ -214,14 +232,71 @@ def preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
         .rename(columns={'realizado': 'ate_bimestre'})
     )
 
-    base = df_prev.merge(df_bim, on=chaves, how='left').merge(df_ate, on=chaves, how='left')
-    base = base.fillna(0)
+    base = (
+        df_orcado
+        .merge(df_bim, on=chaves, how='left')
+        .merge(df_ate, on=chaves, how='left')
+        .fillna(0)
+    )
+
     base['saldo'] = base['previsao_atualizada'] - base['ate_bimestre']
     base['perc_bim'] = base.apply(lambda r: safe_div(r['no_bimestre'], r['previsao_atualizada']), axis=1)
     base['perc_ate'] = base.apply(lambda r: safe_div(r['ate_bimestre'], r['previsao_atualizada']), axis=1)
+
     return base
 
-undefined
+def preparar_base_despesas_lrf(df_desp, meses_bim, meses_ate_agora):
+    if df_desp.empty:
+        return pd.DataFrame(columns=[
+            'natureza', 'orcado_inicial', 'cred_autorizado', 'emp_no_bim', 'emp_ate',
+            'liq_no_bim', 'liq_ate', 'pago_ate', 'modalidade', 'grupo'
+        ])
+
+    chaves = ['natureza']
+    m_max = max(meses_ate_agora)
+
+    df_last = (
+        df_desp[df_desp['mes'] == m_max]
+        .groupby(chaves, as_index=False)
+        .agg({
+            'orcado_inicial': 'sum',
+            'cred_autorizado': 'sum'
+        })
+    )
+
+    df_bim = (
+        df_desp[df_desp['mes'].isin(meses_bim)]
+        .groupby(chaves, as_index=False)
+        .agg({
+            'empenhado': 'sum',
+            'liquidado': 'sum'
+        })
+        .rename(columns={
+            'empenhado': 'emp_no_bim',
+            'liquidado': 'liq_no_bim'
+        })
+    )
+
+    df_ate = (
+        df_desp[df_desp['mes'].isin(meses_ate_agora)]
+        .groupby(chaves, as_index=False)
+        .agg({
+            'empenhado': 'sum',
+            'liquidado': 'sum',
+            'pago': 'sum'
+        })
+        .rename(columns={
+            'empenhado': 'emp_ate',
+            'liquidado': 'liq_ate',
+            'pago': 'pago_ate'
+        })
+    )
+
+    base = df_last.merge(df_bim, on=chaves, how='outer').merge(df_ate, on=chaves, how='outer')
+    base = base.fillna(0)
+    base['modalidade'] = base['natureza'].apply(modalidade_da_natureza)
+    base['grupo'] = base['natureza'].apply(grupo_natureza)
+    return base
 
 def preparar_base_funcional_lrf(df_desp, meses_bim, meses_ate_agora):
     if df_desp.empty:
@@ -297,9 +372,6 @@ def gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora):
         })
         fmt_item = workbook.add_format({
             'border': 1, 'indent': 1
-        })
-        fmt_total = workbook.add_format({
-            'bold': True, 'border': 1, 'bg_color': '#EDEDED'
         })
         fmt_money = workbook.add_format({
             'border': 1, 'num_format': '#,##0.00'
@@ -430,7 +502,7 @@ def gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora):
             ('Dedução-Custas Processuais Justiça Estadual e Recursos Vinculados', {'previsao_inicial': 0, 'previsao_atualizada': 0, 'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0, 'perc_bim': 0, 'perc_ate': 0}),
             ('SALDO DE EXERCÍCIOS ANTERIORES', {'previsao_inicial': 0, 'previsao_atualizada': 0, 'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0, 'perc_bim': 0, 'perc_ate': 0}),
             ('SUPERÁVIT FINANCEIRO', {'previsao_inicial': 0, 'previsao_atualizada': 0, 'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0, 'perc_bim': 0, 'perc_ate': 0}),
-            ('TOTAL DA RECEITA (III + IV)', total_geral)
+            ('TOTAL DA RECEITA (IV)', total_geral)
         ]
 
         for descricao, vals in linhas_finais:
@@ -769,6 +841,7 @@ def gerar_excel_anexo2(df_desp, meses_bim, meses_ate_agora):
 
     return output.getvalue()
 
+# --- INICIALIZAÇÃO ---
 inicializar_banco()
 
 # --- SIDEBAR ---
@@ -780,6 +853,7 @@ with st.sidebar:
     if arquivo and st.button("🚀 Processar Dados"):
         m_final = 1
         df_scan = pd.read_excel(arquivo, nrows=10, header=None)
+
         for r in range(len(df_scan)):
             for celula in df_scan.iloc[r]:
                 for nome, num in MESES_MAPA.items():
@@ -791,18 +865,28 @@ with st.sidebar:
         if tipo_dado == "Receita":
             df = pd.read_excel(arquivo, skiprows=7)
             dados = []
+
             for _, row in df.iterrows():
                 cod = str(row.iloc[0]).strip().replace('"', '')
+
                 if re.match(r'^\d', cod) and cod[-1] != '0':
                     real = limpar_f(row.iloc[6])
                     if cod.startswith('9'):
                         real = -abs(real)
+
                     cur = conn.execute("SELECT categoria FROM receitas WHERE codigo_full = ?", (cod,))
                     r_cat = cur.fetchone()
                     cat_atual = r_cat[0] if r_cat else "Não Classificada"
+
                     dados.append((
-                        m_final, 2026, cod, str(row.iloc[1]).replace('"', ''),
-                        limpar_f(row.iloc[3]), real, limpar_f(row.iloc[5]), cat_atual
+                        m_final,
+                        2026,
+                        cod,
+                        str(row.iloc[1]).replace('"', ''),
+                        limpar_f(row.iloc[3]),
+                        real,
+                        limpar_f(row.iloc[5]),
+                        cat_atual
                     ))
 
             conn.execute("DELETE FROM receitas WHERE ano = ? AND mes = ?", (2026, m_final))
@@ -856,9 +940,9 @@ with st.sidebar:
                     df_ant = pd.read_sql("""
                         SELECT
                             uo, funcao, subfuncao, programa, projeto, natureza, fonte,
-                            SUM(empenhado) as empenhado_ant,
-                            SUM(liquidado) as liquidado_ant,
-                            SUM(pago) as pago_ant
+                            SUM(empenhado) AS empenhado_ant,
+                            SUM(liquidado) AS liquidado_ant,
+                            SUM(pago) AS pago_ant
                         FROM despesas
                         WHERE ano = 2026 AND mes < ?
                         GROUP BY uo, funcao, subfuncao, programa, projeto, natureza, fonte
@@ -867,6 +951,7 @@ with st.sidebar:
                     df_ant = pd.DataFrame(columns=chaves + ['empenhado_ant', 'liquidado_ant', 'pago_ant'])
 
                 df_mes = df_mes.merge(df_ant, on=chaves, how='left').fillna(0)
+
                 df_mes['empenhado'] = df_mes['empenhado_cum'] - df_mes['empenhado_ant']
                 df_mes['liquidado'] = df_mes['liquidado_cum'] - df_mes['liquidado_ant']
                 df_mes['pago'] = df_mes['pago_cum'] - df_mes['pago_ant']
@@ -890,6 +975,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
+
     st.subheader("💾 Backup")
     conn = sqlite3.connect(DB_NAME)
     df_bkp = pd.read_sql("SELECT * FROM receitas", conn)
@@ -897,7 +983,12 @@ with st.sidebar:
 
     if not df_bkp.empty:
         csv = df_bkp.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Baixar Backup", data=csv, file_name="backup_fiplan.csv", mime="text/csv")
+        st.download_button(
+            "📥 Baixar Backup",
+            data=csv,
+            file_name="backup_fiplan.csv",
+            mime="text/csv"
+        )
 
     file_restore = st.file_uploader("📂 Restaurar", type=["csv"])
     if file_restore and st.button("🔄 Restaurar"):
@@ -910,6 +1001,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
+
     st.subheader("🗑️ Limpeza")
     confirma_limpeza = st.checkbox("Confirmo apagar tudo")
     if st.button("🗑️ Limpar Dados"):
@@ -948,7 +1040,7 @@ with tab1:
             "Meses:",
             sorted(df_rec['mes'].unique()),
             default=df_rec['mes'].unique(),
-            format_func=lambda x: MESES_NOMES[x-1],
+            format_func=lambda x: MESES_NOMES[x - 1],
             key="ms_receita"
         )
         cat_sel = f2.multiselect(
@@ -974,7 +1066,7 @@ with tab1:
             k1, k2, k3 = st.columns(3)
             k1.metric("Orçado Atual", f"R$ {v_orc:,.2f}")
             k2.metric("Realizado", f"R$ {v_real:,.2f}")
-            k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc!=0 else 0):.1f}%")
+            k3.metric("Atingimento", f"{(v_real / v_orc * 100 if v_orc != 0 else 0):.1f}%")
 
             df_g = df_rf.groupby('mes').agg({'realizado': 'sum'}).reset_index()
             df_g['previsao'] = [
@@ -984,13 +1076,13 @@ with tab1:
 
             fig = go.Figure()
             fig.add_trace(go.Bar(
-                x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]),
+                x=df_g['mes'].map(lambda x: MESES_NOMES[x - 1]),
                 y=df_g['realizado'],
                 name="Realizado",
                 marker_color='#2E7D32'
             ))
             fig.add_trace(go.Scatter(
-                x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]),
+                x=df_g['mes'].map(lambda x: MESES_NOMES[x - 1]),
                 y=df_g['previsao'],
                 name="Previsão",
                 line=dict(color='#FF9800', width=3, dash='dot')
@@ -1001,10 +1093,13 @@ with tab1:
                 hovermode="x unified",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
+
             st.plotly_chart(fig, use_container_width=True)
+
             st.dataframe(
                 df_rf[['categoria', 'codigo_full', 'natureza', 'realizado', 'orcado']].style.format({
-                    'realizado': '{:,.2f}', 'orcado': '{:,.2f}'
+                    'realizado': '{:,.2f}',
+                    'orcado': '{:,.2f}'
                 }),
                 width='stretch'
             )
@@ -1017,7 +1112,7 @@ with tab2:
             "Meses:",
             sorted(df_desp['mes'].unique()),
             default=df_desp['mes'].unique(),
-            format_func=lambda x: MESES_NOMES[x-1],
+            format_func=lambda x: MESES_NOMES[x - 1],
             key="ms_despesa"
         )
         fs = f2.multiselect("Função:", sorted(df_desp['funcao'].unique()), key="func_despesa")
@@ -1056,8 +1151,10 @@ with tab2:
             k4.metric("Pago", f"R$ {df_view['pago'].sum():,.2f}")
 
             st.dataframe(
-                df_view[['funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza',
-                         'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
+                df_view[[
+                    'funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza',
+                    'cred_autorizado', 'empenhado', 'liquidado', 'pago'
+                ]].style.format({
                     'cred_autorizado': '{:,.2f}',
                     'empenhado': '{:,.2f}',
                     'liquidado': '{:,.2f}',
@@ -1075,7 +1172,7 @@ with tab3:
             "Filtrar Meses para Confronto:",
             meses_conj,
             default=meses_conj,
-            format_func=lambda x: MESES_NOMES[x-1],
+            format_func=lambda x: MESES_NOMES[x - 1],
             key="ms_confronto"
         )
 
@@ -1100,15 +1197,12 @@ with tab3:
         fig_c.add_trace(go.Bar(name='Receita', x=['Confronto'], y=[tr], marker_color='green'))
         fig_c.add_trace(go.Bar(name='Empenhado', x=['Confronto'], y=[te], marker_color='orange'))
         fig_c.add_trace(go.Bar(name='Pago', x=['Confronto'], y=[tp], marker_color='red'))
-
         fig_c.update_layout(
             height=400,
             barmode='group',
             margin=dict(l=0, r=0, t=30, b=0)
         )
-
         st.plotly_chart(fig_c, use_container_width=True)
-
 
 # --- ABA 4: RELATÓRIOS LRF ---
 with tab4:
