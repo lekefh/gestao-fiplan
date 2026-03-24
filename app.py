@@ -204,11 +204,14 @@ def preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
             'no_bimestre', 'ate_bimestre', 'saldo', 'perc_bim', 'perc_ate'
         ])
 
+    # EXCLUI AS DEDUÇÕES (códigos iniciados por 9) da base principal do anexo
+    df_base = df_rec[~df_rec['codigo_full'].astype(str).str.startswith('9')].copy()
+
     chaves = ['categoria', 'natureza']
 
     # PREVISÃO ATUALIZADA = ORÇADO ATUALIZADO (orcado)
     df_orcado = (
-        df_rec[df_rec['mes'].isin(meses_ate_agora)]
+        df_base[df_base['mes'].isin(meses_ate_agora)]
         .groupby(chaves, as_index=False)
         .agg({'orcado': 'max'})
         .rename(columns={'orcado': 'previsao_atualizada'})
@@ -219,14 +222,14 @@ def preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
     df_orcado['previsao_inicial'] = df_orcado['previsao_atualizada']
 
     df_bim = (
-        df_rec[df_rec['mes'].isin(meses_bim)]
+        df_base[df_base['mes'].isin(meses_bim)]
         .groupby(chaves, as_index=False)['realizado']
         .sum()
         .rename(columns={'realizado': 'no_bimestre'})
     )
 
     df_ate = (
-        df_rec[df_rec['mes'].isin(meses_ate_agora)]
+        df_base[df_base['mes'].isin(meses_ate_agora)]
         .groupby(chaves, as_index=False)['realizado']
         .sum()
         .rename(columns={'realizado': 'ate_bimestre'})
@@ -246,6 +249,50 @@ def preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
 
     return base
 
+def preparar_deducoes_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
+    if df_rec.empty:
+        return {
+            'previsao_inicial': 0.0,
+            'previsao_atualizada': 0.0,
+            'no_bimestre': 0.0,
+            'ate_bimestre': 0.0,
+            'saldo': 0.0,
+            'perc_bim': 0.0,
+            'perc_ate': 0.0
+        }
+
+    df_ded = df_rec[df_rec['codigo_full'].astype(str).str.startswith('9')].copy()
+
+    if df_ded.empty:
+        return {
+            'previsao_inicial': 0.0,
+            'previsao_atualizada': 0.0,
+            'no_bimestre': 0.0,
+            'ate_bimestre': 0.0,
+            'saldo': 0.0,
+            'perc_bim': 0.0,
+            'perc_ate': 0.0
+        }
+
+    previsao_atualizada = float(
+        df_ded[df_ded['mes'].isin(meses_ate_agora)]
+        .groupby('codigo_full')['orcado']
+        .max()
+        .sum()
+    )
+
+    no_bimestre = float(df_ded[df_ded['mes'].isin(meses_bim)]['realizado'].sum())
+    ate_bimestre = float(df_ded[df_ded['mes'].isin(meses_ate_agora)]['realizado'].sum())
+
+    return {
+        'previsao_inicial': previsao_atualizada,
+        'previsao_atualizada': previsao_atualizada,
+        'no_bimestre': no_bimestre,
+        'ate_bimestre': ate_bimestre,
+        'saldo': previsao_atualizada - ate_bimestre,
+        'perc_bim': safe_div(no_bimestre, previsao_atualizada),
+        'perc_ate': safe_div(ate_bimestre, previsao_atualizada)
+    }
 
 def preparar_base_despesas_lrf(df_desp, meses_bim, meses_ate_agora):
     if df_desp.empty:
@@ -354,6 +401,7 @@ def preparar_base_funcional_lrf(df_desp, meses_bim, meses_ate_agora):
 # ----------------------------
 def gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora):
     base = preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora)
+    deducoes = preparar_deducoes_receitas_lrf(df_rec, meses_bim, meses_ate_agora)
     periodo = periodo_bimestre_extenso(meses_bim)
 
     output = io.BytesIO()
@@ -437,9 +485,13 @@ def gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora):
             row += 1
 
         total_geral = {
-            'previsao_inicial': 0, 'previsao_atualizada': 0,
-            'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0,
-            'perc_bim': 0, 'perc_ate': 0
+            'previsao_inicial': 0,
+            'previsao_atualizada': 0,
+            'no_bimestre': 0,
+            'ate_bimestre': 0,
+            'saldo': 0,
+            'perc_bim': 0,
+            'perc_ate': 0
         }
 
         for nome_grupo, cats in grupos.items():
@@ -464,6 +516,7 @@ def gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora):
                 if df_c.empty:
                     continue
 
+                    # nunca entra aqui se vazio, apenas para clareza
                 soma_c = {
                     'previsao_inicial': float(df_c['previsao_inicial'].sum()),
                     'previsao_atualizada': float(df_c['previsao_atualizada'].sum()),
@@ -497,14 +550,24 @@ def gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora):
         total_geral['perc_bim'] = safe_div(total_geral['no_bimestre'], total_geral['previsao_atualizada'])
         total_geral['perc_ate'] = safe_div(total_geral['ate_bimestre'], total_geral['previsao_atualizada'])
 
+        total_final = {
+            'previsao_inicial': total_geral['previsao_inicial'] + deducoes['previsao_inicial'],
+            'previsao_atualizada': total_geral['previsao_atualizada'] + deducoes['previsao_atualizada'],
+            'no_bimestre': total_geral['no_bimestre'] + deducoes['no_bimestre'],
+            'ate_bimestre': total_geral['ate_bimestre'] + deducoes['ate_bimestre'],
+            'saldo': total_geral['saldo'] + deducoes['saldo']
+        }
+        total_final['perc_bim'] = safe_div(total_final['no_bimestre'], total_final['previsao_atualizada'])
+        total_final['perc_ate'] = safe_div(total_final['ate_bimestre'], total_final['previsao_atualizada'])
+
         linhas_finais = [
             ('SUBTOTAL DA RECEITA (I)', total_geral),
             ('DEFICIT (II)', {'previsao_inicial': 0, 'previsao_atualizada': 0, 'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0, 'perc_bim': 0, 'perc_ate': 0}),
             ('TOTAL (III) = I + II', total_geral),
-            ('Dedução-Custas Processuais Justiça Estadual e Recursos Vinculados', {'previsao_inicial': 0, 'previsao_atualizada': 0, 'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0, 'perc_bim': 0, 'perc_ate': 0}),
+            ('DEDUÇÕES DA RECEITA (CÓDIGOS INICIADOS POR 9)', deducoes),
             ('SALDO DE EXERCÍCIOS ANTERIORES', {'previsao_inicial': 0, 'previsao_atualizada': 0, 'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0, 'perc_bim': 0, 'perc_ate': 0}),
             ('SUPERÁVIT FINANCEIRO', {'previsao_inicial': 0, 'previsao_atualizada': 0, 'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0, 'perc_bim': 0, 'perc_ate': 0}),
-            ('TOTAL DA RECEITA (IV)', total_geral)
+            ('TOTAL DA RECEITA (IV)', total_final)
         ]
 
         for descricao, vals in linhas_finais:
@@ -953,7 +1016,6 @@ with st.sidebar:
                     df_ant = pd.DataFrame(columns=chaves + ['empenhado_ant', 'liquidado_ant', 'pago_ant'])
 
                 df_mes = df_mes.merge(df_ant, on=chaves, how='left').fillna(0)
-
                 df_mes['empenhado'] = df_mes['empenhado_cum'] - df_mes['empenhado_ant']
                 df_mes['liquidado'] = df_mes['liquidado_cum'] - df_mes['liquidado_ant']
                 df_mes['pago'] = df_mes['pago_cum'] - df_mes['pago_ant']
@@ -1183,68 +1245,4 @@ with tab3:
         tl = df_desp[df_desp['mes'].isin(ms_c)]['liquidado'].sum() if not df_desp.empty else 0
         tp = df_desp[df_desp['mes'].isin(ms_c)]['pago'].sum() if not df_desp.empty else 0
 
-        kc1, kc2, kc3, kc4 = st.columns(4)
-        kc1.metric("Receita Arrecadada", f"R$ {tr:,.2f}")
-        kc2.metric("Despesa Empenhada", f"R$ {te:,.2f}")
-        kc3.metric("Despesa Liquidada", f"R$ {tl:,.2f}")
-        kc4.metric("Despesa Paga", f"R$ {tp:,.2f}")
-
-        st.divider()
-
-        m1, m2 = st.columns(2)
-        m1.info(f"**Superávit Financeiro (Receita - Pago):** \n R$ {tr - tp:,.2f}")
-        m2.warning(f"**Superávit Orçamentário (Receita - Empenhado):** \n R$ {tr - te:,.2f}")
-
-        fig_c = go.Figure()
-        fig_c.add_trace(go.Bar(name='Receita', x=['Confronto'], y=[tr], marker_color='green'))
-        fig_c.add_trace(go.Bar(name='Empenhado', x=['Confronto'], y=[te], marker_color='orange'))
-        fig_c.add_trace(go.Bar(name='Pago', x=['Confronto'], y=[tp], marker_color='red'))
-        fig_c.update_layout(
-            height=400,
-            barmode='group',
-            margin=dict(l=0, r=0, t=30, b=0)
-        )
-        st.plotly_chart(fig_c, use_container_width=True)
-
-# --- ABA 4: RELATÓRIOS LRF ---
-with tab4:
-    st.subheader("📄 Relatórios Bimestrais da LRF (RREO)")
-
-    if df_rec.empty or df_desp.empty:
-        st.info("Importe dados para gerar os anexos da LRF.")
-    else:
-        bimestre_sel = st.selectbox("Selecione o Bimestre:", list(BIMESTRES.keys()))
-        meses_bim = BIMESTRES[bimestre_sel]
-        meses_ate_agora = list(range(1, max(meses_bim) + 1))
-
-        c_lrf1, c_lrf2, c_lrf3 = st.columns(3)
-
-        with c_lrf1:
-            st.write("**Anexo I - Receitas**")
-            st.download_button(
-                "📥 Baixar Anexo I",
-                data=gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora),
-                file_name=f"LRF_Anexo_I_{bimestre_sel}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-        with c_lrf2:
-            st.write("**Anexo IA - Despesas**")
-            st.download_button(
-                "📥 Baixar Anexo IA",
-                data=gerar_excel_anexo1a(df_desp, df_rec, meses_bim, meses_ate_agora),
-                file_name=f"LRF_Anexo_IA_{bimestre_sel}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-        with c_lrf3:
-            st.write("**Anexo II - Funcional**")
-            st.download_button(
-                "📥 Baixar Anexo II",
-                data=gerar_excel_anexo2(df_desp, meses_bim, meses_ate_agora),
-                file_name=f"LRF_Anexo_II_{bimestre_sel}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-        st.divider()
-        st.caption("Nota: Os valores de arrecadação e execução são acumulados do início do exercício até o bimestre selecionado.")
+        kc1, kc2, kc3
