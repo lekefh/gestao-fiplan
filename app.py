@@ -26,7 +26,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
 # --- FUNÇÕES AUXILIARES ---
 def inicializar_banco():
     conn = sqlite3.connect(DB_NAME)
@@ -100,6 +99,14 @@ def normalizar_chave(v):
     return s
 
 
+def limpar_todos_dados():
+    conn = sqlite3.connect(DB_NAME)
+    conn.execute("DELETE FROM receitas")
+    conn.execute("DELETE FROM despesas")
+    conn.commit()
+    conn.close()
+
+
 inicializar_banco()
 
 # --- SIDEBAR ---
@@ -153,8 +160,8 @@ with st.sidebar:
 
         else:
             # --- DESPESA ---
-            # O arquivo 616 traz EMPENHADO/LIQUIDADO/PAGO acumulados.
-            # Precisamos salvar no banco apenas o valor mensal.
+            # EMPENHADO / LIQUIDADO / PAGO vêm acumulados no 616
+            # e serão convertidos para valor mensal antes de salvar no banco.
             df = pd.read_excel(arquivo, skiprows=6)
             df.columns = df.columns.str.strip().str.upper()
 
@@ -196,7 +203,7 @@ with st.sidebar:
 
                 chaves = ['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte']
 
-                # Agrupa o próprio arquivo do mês na mesma granularidade usada no banco
+                # Agrupa o arquivo do mês na mesma granularidade salva no banco
                 df_mes = df_mes.groupby(chaves, as_index=False).agg({
                     'orcado_inicial': 'sum',
                     'cred_autorizado': 'sum',
@@ -205,7 +212,7 @@ with st.sidebar:
                     'pago_cum': 'sum'
                 })
 
-                # Busca o acumulado já salvo no banco até o mês anterior
+                # Busca o acumulado já salvo até o mês anterior
                 if m_final > 1:
                     df_ant = pd.read_sql("""
                         SELECT
@@ -224,13 +231,11 @@ with st.sidebar:
                         GROUP BY uo, funcao, subfuncao, programa, projeto, natureza, fonte
                     """, conn, params=(2026, m_final))
                 else:
-                    df_ant = pd.DataFrame(
-                        columns=chaves + ['empenhado_ant', 'liquidado_ant', 'pago_ant']
-                    )
+                    df_ant = pd.DataFrame(columns=chaves + ['empenhado_ant', 'liquidado_ant', 'pago_ant'])
 
                 df_mes = df_mes.merge(df_ant, on=chaves, how='left').fillna(0)
 
-                # Converte acumulado em valor do mês
+                # Converte acumulado em valor mensal
                 df_mes['empenhado'] = df_mes['empenhado_cum'] - df_mes['empenhado_ant']
                 df_mes['liquidado'] = df_mes['liquidado_cum'] - df_mes['liquidado_ant']
                 df_mes['pago'] = df_mes['pago_cum'] - df_mes['pago_ant']
@@ -288,6 +293,18 @@ with st.sidebar:
         st.success("Restaurado!")
         st.rerun()
 
+    st.divider()
+
+    st.subheader("🗑️ Limpeza")
+    confirma_limpeza = st.checkbox("Confirmo que desejo apagar todas as receitas e despesas")
+
+    if st.button("🗑️ Limpar Dados", type="secondary"):
+        if confirma_limpeza:
+            limpar_todos_dados()
+            st.success("Todos os dados foram apagados com sucesso.")
+            st.rerun()
+        else:
+            st.warning("Marque a confirmação antes de limpar os dados.")
 
 # --- CARGA ---
 conn = sqlite3.connect(DB_NAME)
@@ -296,7 +313,6 @@ df_desp = pd.read_sql("SELECT * FROM despesas", conn)
 conn.close()
 
 tab1, tab2 = st.tabs(["📊 Receitas", "💸 Despesas"])
-
 
 # --- ABA RECEITAS ---
 with tab1:
@@ -384,7 +400,6 @@ with tab1:
                     conn.commit()
                     conn.close()
                     st.rerun()
-
 
 # --- ABA DESPESAS ---
 with tab2:
