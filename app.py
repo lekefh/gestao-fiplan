@@ -1472,6 +1472,47 @@ with tab2:
             k3.metric("Liquidado", f"R$ {df_view['liquidado'].sum():,.2f}")
             k4.metric("Pago", f"R$ {df_view['pago'].sum():,.2f}")
 
+            df_graf = (
+                df_f.groupby(['ano', 'mes'], as_index=False)[['empenhado', 'liquidado', 'pago']]
+                .sum()
+                .sort_values(['ano', 'mes'])
+            )
+
+            df_graf['competencia'] = df_graf.apply(
+                lambda r: f"{MESES_NOMES[int(r['mes']) - 1]}/{int(r['ano'])}",
+                axis=1
+            )
+
+            fig_d = go.Figure()
+            fig_d.add_trace(go.Bar(
+                x=df_graf['competencia'],
+                y=df_graf['empenhado'],
+                name='Empenhado',
+                marker_color='#FB8C00'
+            ))
+            fig_d.add_trace(go.Bar(
+                x=df_graf['competencia'],
+                y=df_graf['liquidado'],
+                name='Liquidado',
+                marker_color='#1E88E5'
+            ))
+            fig_d.add_trace(go.Bar(
+                x=df_graf['competencia'],
+                y=df_graf['pago'],
+                name='Pago',
+                marker_color='#E53935'
+            ))
+
+            fig_d.update_layout(
+                height=360,
+                barmode='group',
+                margin=dict(l=0, r=0, t=30, b=0),
+                hovermode='x unified',
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            )
+
+            st.plotly_chart(fig_d, use_container_width=True)
+
             st.dataframe(
                 df_view[[
                     'funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza',
