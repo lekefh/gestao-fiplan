@@ -214,8 +214,8 @@ def preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
         .rename(columns={'orcado': 'previsao_atualizada'})
     )
 
-    # Como a base atual não separa previsão inicial da receita,
-    # usamos o mesmo valor do orçamento anual.
+    # Enquanto não houver coluna separada de previsão inicial,
+    # usa o mesmo valor da previsão atualizada
     df_orcado['previsao_inicial'] = df_orcado['previsao_atualizada']
 
     df_bim = (
@@ -239,11 +239,13 @@ def preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
         .fillna(0)
     )
 
+    # SALDO A REALIZAR = PREVISÃO ATUALIZADA - REALIZADO ATÉ O BIMESTRE
     base['saldo'] = base['previsao_atualizada'] - base['ate_bimestre']
     base['perc_bim'] = base.apply(lambda r: safe_div(r['no_bimestre'], r['previsao_atualizada']), axis=1)
     base['perc_ate'] = base.apply(lambda r: safe_div(r['ate_bimestre'], r['previsao_atualizada']), axis=1)
 
     return base
+
 
 def preparar_base_despesas_lrf(df_desp, meses_bim, meses_ate_agora):
     if df_desp.empty:
