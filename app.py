@@ -1304,7 +1304,7 @@ with tab1:
 
             df_orc_ref = df_base[(df_base['ano'] == ano_ref) & (df_base['mes'] == mes_ref)].copy()
 
-                       if cat_sel:
+            if cat_sel:
                 df_orc_ref = df_orc_ref[df_orc_ref['categoria'].isin(cat_sel)]
             if nat_sel:
                 df_orc_ref = df_orc_ref[df_orc_ref['natureza'].isin(nat_sel)]
@@ -1612,5 +1612,4 @@ with tab4:
 
             st.divider()
             st.caption("Nota: Os valores de arrecadação e execução são acumulados do início do exercício até o bimestre selecionado.")
-
-
+ 
