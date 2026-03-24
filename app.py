@@ -1230,8 +1230,12 @@ with tab2:
 # --- ABA 3: COMPARATIVO ---
 with tab3:
     st.subheader("⚖️ Confronto Geral Financeiro e Orçamentário")
+
     if not df_rec.empty or not df_desp.empty:
-        meses_conj = sorted(list(set(df_rec['mes'].unique()) | set(df_desp['mes'].unique())))
+        meses_rec = set(df_rec['mes'].dropna().astype(int).tolist()) if not df_rec.empty else set()
+        meses_desp = set(df_desp['mes'].dropna().astype(int).tolist()) if not df_desp.empty else set()
+        meses_conj = sorted(list(meses_rec.union(meses_desp)))
+
         ms_c = st.multiselect(
             "Filtrar Meses para Confronto:",
             meses_conj,
@@ -1240,9 +1244,78 @@ with tab3:
             key="ms_confronto"
         )
 
-        tr = df_rec[df_rec['mes'].isin(ms_c)]['realizado'].sum() if not df_rec.empty else 0
-        te = df_desp[df_desp['mes'].isin(ms_c)]['empenhado'].sum() if not df_desp.empty else 0
-        tl = df_desp[df_desp['mes'].isin(ms_c)]['liquidado'].sum() if not df_desp.empty else 0
-        tp = df_desp[df_desp['mes'].isin(ms_c)]['pago'].sum() if not df_desp.empty else 0
+        tr = df_rec[df_rec['mes'].isin(ms_c)]['realizado'].sum() if not df_rec.empty else 0.0
+        te = df_desp[df_desp['mes'].isin(ms_c)]['empenhado'].sum() if not df_desp.empty else 0.0
+        tl = df_desp[df_desp['mes'].isin(ms_c)]['liquidado'].sum() if not df_desp.empty else 0.0
+        tp = df_desp[df_desp['mes'].isin(ms_c)]['pago'].sum() if not df_desp.empty else 0.0
 
-        kc1, kc2, kc3
+        kc1, kc2, kc3, kc4 = st.columns(4)
+        kc1.metric("Receita Arrecadada", f"R$ {tr:,.2f}")
+        kc2.metric("Despesa Empenhada", f"R$ {te:,.2f}")
+        kc3.metric("Despesa Liquidada", f"R$ {tl:,.2f}")
+        kc4.metric("Despesa Paga", f"R$ {tp:,.2f}")
+
+        st.divider()
+
+        m1, m2 = st.columns(2)
+        m1.info(f"**Superávit Financeiro (Receita - Pago):**\n\nR$ {tr - tp:,.2f}")
+        m2.warning(f"**Superávit Orçamentário (Receita - Empenhado):**\n\nR$ {tr - te:,.2f}")
+
+        fig_c = go.Figure()
+        fig_c.add_trace(go.Bar(name='Receita', x=['Confronto'], y=[tr], marker_color='green'))
+        fig_c.add_trace(go.Bar(name='Empenhado', x=['Confronto'], y=[te], marker_color='orange'))
+        fig_c.add_trace(go.Bar(name='Pago', x=['Confronto'], y=[tp], marker_color='red'))
+
+        fig_c.update_layout(
+            height=400,
+            barmode='group',
+            margin=dict(l=0, r=0, t=30, b=0)
+        )
+
+        st.plotly_chart(fig_c, use_container_width=True)
+    else:
+        st.info("Importe dados de receita e/ou despesa para visualizar o comparativo.")
+
+# --- ABA 4: RELATÓRIOS LRF ---
+with tab4:
+    st.subheader("📄 Relatórios Bimestrais da LRF (RREO)")
+
+    if df_rec.empty or df_desp.empty:
+        st.info("Importe dados para gerar os anexos da LRF.")
+    else:
+        bimestre_sel = st.selectbox("Selecione o Bimestre:", list(BIMESTRES.keys()))
+        meses_bim = BIMESTRES[bimestre_sel]
+        meses_ate_agora = list(range(1, max(meses_bim) + 1))
+
+        c_lrf1, c_lrf2, c_lrf3 = st.columns(3)
+
+        with c_lrf1:
+            st.write("**Anexo I - Receitas**")
+            st.download_button(
+                "📥 Baixar Anexo I",
+                data=gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora),
+                file_name=f"LRF_Anexo_I_{bimestre_sel}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        with c_lrf2:
+            st.write("**Anexo IA - Despesas**")
+            st.download_button(
+                "📥 Baixar Anexo IA",
+                data=gerar_excel_anexo1a(df_desp, df_rec, meses_bim, meses_ate_agora),
+                file_name=f"LRF_Anexo_IA_{bimestre_sel}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        with c_lrf3:
+            st.write("**Anexo II - Funcional**")
+            st.download_button(
+                "📥 Baixar Anexo II",
+                data=gerar_excel_anexo2(df_desp, meses_bim, meses_ate_agora),
+                file_name=f"LRF_Anexo_II_{bimestre_sel}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        st.divider()
+        st.caption("Nota: Os valores de arrecadação e execução são acumulados do início do exercício até o bimestre selecionado.")
+
