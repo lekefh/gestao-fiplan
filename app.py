@@ -481,7 +481,7 @@ def gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora):
             ('Dedução-Custas Processuais Justiça Estadual e Recursos Vinculados', {'previsao_inicial': 0, 'previsao_atualizada': 0, 'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0, 'perc_bim': 0, 'perc_ate': 0}),
             ('SALDO DE EXERCÍCIOS ANTERIORES', {'previsao_inicial': 0, 'previsao_atualizada': 0, 'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0, 'perc_bim': 0, 'perc_ate': 0}),
             ('SUPERÁVIT FINANCEIRO', {'previsao_inicial': 0, 'previsao_atualizada': 0, 'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0, 'perc_bim': 0, 'perc_ate': 0}),
-            ('TOTAL DA RECEITA (IV)', total_geral)
+            ('TOTAL DA RECEITA (III + IV)', total_geral)
         ]
 
         for descricao, vals in linhas_finais:
