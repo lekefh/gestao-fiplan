@@ -1150,8 +1150,16 @@ with tab3:
         fig_c = go.Figure()
         fig_c.add_trace(go.Bar(name='Receita', x=['Confronto'], y=[tr], marker_color='green'))
         fig_c.add_trace(go.Bar(name='Empenhado', x=['Confronto'], y=[te], marker_color='orange'))
-        fig_c.update_layout(height=400, barmode='group', margin=dict(l=0, r=0, t=30, b=0))
+        fig_c.add_trace(go.Bar(name='Pago', x=['Confronto'], y=[tp], marker_color='red'))
+
+        fig_c.update_layout(
+            height=400,
+            barmode='group',
+            margin=dict(l=0, r=0, t=30, b=0)
+        )
+
         st.plotly_chart(fig_c, use_container_width=True)
+
 
 # --- ABA 4: RELATÓRIOS LRF ---
 with tab4:
