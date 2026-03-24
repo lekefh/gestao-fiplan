@@ -1304,7 +1304,7 @@ with tab1:
 
             df_orc_ref = df_base[(df_base['ano'] == ano_ref) & (df_base['mes'] == mes_ref)].copy()
 
-            if cat_sel
+                       if cat_sel:
                 df_orc_ref = df_orc_ref[df_orc_ref['categoria'].isin(cat_sel)]
             if nat_sel:
                 df_orc_ref = df_orc_ref[df_orc_ref['natureza'].isin(nat_sel)]
@@ -1497,11 +1497,27 @@ with tab3:
     st.subheader("⚖️ Confronto Geral Financeiro e Orçamentário")
 
     if not df_rec.empty or not df_desp.empty:
-        meses_rec = set(df_rec['mes'].dropna().astype(int).tolist()) if not df_rec.empty else set()
-        meses_desp = set(df_desp['mes'].dropna().astype(int).tolist()) if not df_desp.empty else set()
+        anos_rec = set(df_rec['ano'].dropna().astype(int).tolist()) if not df_rec.empty else set()
+        anos_desp = set(df_desp['ano'].dropna().astype(int).tolist()) if not df_desp.empty else set()
+        anos_conj = sorted(list(anos_rec.union(anos_desp)))
+
+        a0, a1 = st.columns(2)
+
+        anos_sel_comp = a0.multiselect(
+            "Filtrar Anos para Confronto:",
+            anos_conj,
+            default=anos_conj,
+            key="anos_confronto"
+        )
+
+        df_rec_c = df_rec[df_rec['ano'].isin(anos_sel_comp)].copy() if not df_rec.empty and anos_sel_comp else pd.DataFrame()
+        df_desp_c = df_desp[df_desp['ano'].isin(anos_sel_comp)].copy() if not df_desp.empty and anos_sel_comp else pd.DataFrame()
+
+        meses_rec = set(df_rec_c['mes'].dropna().astype(int).tolist()) if not df_rec_c.empty else set()
+        meses_desp = set(df_desp_c['mes'].dropna().astype(int).tolist()) if not df_desp_c.empty else set()
         meses_conj = sorted(list(meses_rec.union(meses_desp)))
 
-        ms_c = st.multiselect(
+        ms_c = a1.multiselect(
             "Filtrar Meses para Confronto:",
             meses_conj,
             default=meses_conj,
@@ -1509,10 +1525,10 @@ with tab3:
             key="ms_confronto"
         )
 
-        tr = df_rec[df_rec['mes'].isin(ms_c)]['realizado'].sum() if not df_rec.empty else 0.0
-        te = df_desp[df_desp['mes'].isin(ms_c)]['empenhado'].sum() if not df_desp.empty else 0.0
-        tl = df_desp[df_desp['mes'].isin(ms_c)]['liquidado'].sum() if not df_desp.empty else 0.0
-        tp = df_desp[df_desp['mes'].isin(ms_c)]['pago'].sum() if not df_desp.empty else 0.0
+        tr = df_rec_c[df_rec_c['mes'].isin(ms_c)]['realizado'].sum() if not df_rec_c.empty else 0.0
+        te = df_desp_c[df_desp_c['mes'].isin(ms_c)]['empenhado'].sum() if not df_desp_c.empty else 0.0
+        tl = df_desp_c[df_desp_c['mes'].isin(ms_c)]['liquidado'].sum() if not df_desp_c.empty else 0.0
+        tp = df_desp_c[df_desp_c['mes'].isin(ms_c)]['pago'].sum() if not df_desp_c.empty else 0.0
 
         kc1, kc2, kc3, kc4 = st.columns(4)
         kc1.metric("Receita Arrecadada", f"R$ {tr:,.2f}")
@@ -1541,6 +1557,7 @@ with tab3:
     else:
         st.info("Importe dados de receita e/ou despesa para visualizar o comparativo.")
 
+
 # --- ABA 4: RELATÓRIOS LRF ---
 with tab4:
     st.subheader("📄 Relatórios Bimestrais da LRF (RREO)")
@@ -1548,82 +1565,52 @@ with tab4:
     if df_rec.empty or df_desp.empty:
         st.info("Importe dados para gerar os anexos da LRF.")
     else:
-        bimestre_sel = st.selectbox("Selecione o Bimestre:", list(BIMESTRES.keys()))
-        meses_bim = BIMESTRES[bimestre_sel]
-        meses_ate_agora = list(range(1, max(meses_bim) + 1))
+        anos_rec = set(df_rec['ano'].dropna().astype(int).tolist())
+        anos_desp = set(df_desp['ano'].dropna().astype(int).tolist())
+        anos_lrf = sorted(list(anos_rec.intersection(anos_desp)))
 
-        c_lrf1, c_lrf2, c_lrf3 = st.columns(3)
+        if not anos_lrf:
+            st.warning("Não há ano em comum entre receitas e despesas para gerar os anexos.")
+        else:
+            ano_lrf = st.selectbox("Ano do Relatório:", anos_lrf, index=len(anos_lrf)-1)
 
-        with c_lrf1:
-            st.write("**Anexo I - Receitas**")
-            st.download_button(
-                "📥 Baixar Anexo I",
-                data=gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora),
-                file_name=f"LRF_Anexo_I_{bimestre_sel}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            df_rec_lrf = df_rec[df_rec['ano'] == ano_lrf].copy()
+            df_desp_lrf = df_desp[df_desp['ano'] == ano_lrf].copy()
 
-        with c_lrf2:
-            st.write("**Anexo IA - Despesas**")
-            st.download_button(
-                "📥 Baixar Anexo IA",
-                data=gerar_excel_anexo1a(df_desp, df_rec, meses_bim, meses_ate_agora),
-                file_name=f"LRF_Anexo_IA_{bimestre_sel}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            bimestre_sel = st.selectbox("Selecione o Bimestre:", list(BIMESTRES.keys()))
+            meses_bim = BIMESTRES[bimestre_sel]
+            meses_ate_agora = list(range(1, max(meses_bim) + 1))
 
-        with c_lrf3:
-            st.write("**Anexo II - Funcional**")
-            st.download_button(
-                "📥 Baixar Anexo II",
-                data=gerar_excel_anexo2(df_desp, meses_bim, meses_ate_agora),
-                file_name=f"LRF_Anexo_II_{bimestre_sel}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            c_lrf1, c_lrf2, c_lrf3 = st.columns(3)
 
-        st.divider()
-        st.caption("Nota: Os valores de arrecadação e execução são acumulados do início do exercício até o bimestre selecionado.")
+            with c_lrf1:
+                st.write("**Anexo I - Receitas**")
+                st.download_button(
+                    "📥 Baixar Anexo I",
+                    data=gerar_excel_anexo1(df_rec_lrf, meses_bim, meses_ate_agora),
+                    file_name=f"LRF_Anexo_I_{ano_lrf}_{bimestre_sel}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
-def normalizar_texto_cabecalho(txt):
-    txt = "" if pd.isna(txt) else str(txt)
-    txt = unicodedata.normalize("NFKD", txt)
-    txt = "".join(c for c in txt if not unicodedata.combining(c))
-    return txt.upper().strip()
+            with c_lrf2:
+                st.write("**Anexo IA - Despesas**")
+                st.download_button(
+                    "📥 Baixar Anexo IA",
+                    data=gerar_excel_anexo1a(df_desp_lrf, df_rec_lrf, meses_bim, meses_ate_agora),
+                    file_name=f"LRF_Anexo_IA_{ano_lrf}_{bimestre_sel}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
-def extrair_mes_ano_arquivo(arquivo):
-    # Lê apenas as primeiras linhas do cabeçalho
-    cab = pd.read_excel(arquivo, header=None, nrows=6)
+            with c_lrf3:
+                st.write("**Anexo II - Funcional**")
+                st.download_button(
+                    "📥 Baixar Anexo II",
+                    data=gerar_excel_anexo2(df_desp_lrf, meses_bim, meses_ate_agora),
+                    file_name=f"LRF_Anexo_II_{ano_lrf}_{bimestre_sel}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
-    textos = []
-
-    # Prioriza a linha 4 do Excel (índice 3 no pandas)
-    if len(cab) > 3:
-        linha4 = " ".join(cab.iloc[3].fillna("").astype(str).tolist())
-        textos.append(linha4)
-
-    # Fallback: junta também as demais primeiras linhas
-    for i in range(min(len(cab), 6)):
-        linha = " ".join(cab.iloc[i].fillna("").astype(str).tolist())
-        textos.append(linha)
-
-    texto = " | ".join(textos)
-    texto_norm = normalizar_texto_cabecalho(texto)
-
-    mes_encontrado = None
-    for nome_mes, num_mes in MESES_MAPA.items():
-        if normalizar_texto_cabecalho(nome_mes) in texto_norm:
-            mes_encontrado = num_mes
-            break
-
-    ano_match = re.search(r'\b(20\d{2})\b', texto_norm)
-    ano_encontrado = int(ano_match.group(1)) if ano_match else None
-
-    if mes_encontrado is None or ano_encontrado is None:
-        raise ValueError(
-            "Não foi possível identificar mês e ano no cabeçalho do arquivo. "
-            "Verifique a linha 4 da planilha."
-        )
-
-    return mes_encontrado, ano_encontrado
+            st.divider()
+            st.caption("Nota: Os valores de arrecadação e execução são acumulados do início do exercício até o bimestre selecionado.")
 
 
