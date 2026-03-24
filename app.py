@@ -1099,54 +1099,118 @@ with tab1:
 
         st.divider()
 
-        f1, f2, f3 = st.columns(3)
+        f0, f1, f2, f3 = st.columns(4)
+
+        anos_disp = sorted(df_rec['ano'].dropna().astype(int).unique().tolist())
+        anos_sel = f0.multiselect(
+            "Ano:",
+            anos_disp,
+            default=anos_disp,
+            key="ano_receita"
+        )
+
+        df_base = df_rec.copy()
+        if anos_sel:
+            df_base = df_base[df_base['ano'].isin(anos_sel)]
+        else:
+            df_base = df_base.iloc[0:0]
+
+        meses_disp = sorted(df_base['mes'].dropna().astype(int).unique().tolist()) if not df_base.empty else []
         ms_r = f1.multiselect(
             "Meses:",
-            sorted(df_rec['mes'].unique()),
-            default=df_rec['mes'].unique(),
+            meses_disp,
+            default=meses_disp,
             format_func=lambda x: MESES_NOMES[x - 1],
             key="ms_receita"
         )
+
+        cats_disp = sorted(df_base['categoria'].dropna().unique().tolist()) if 'categoria' in df_base.columns else []
         cat_sel = f2.multiselect(
             "Categoria:",
-            sorted(df_rec['categoria'].unique()),
-            default=sorted(df_rec['categoria'].unique()),
+            cats_disp,
+            default=cats_disp,
             key="cat_receita"
         )
+
+        nat_disp = sorted(df_base['natureza'].dropna().unique().tolist()) if 'natureza' in df_base.columns else []
         nat_sel = f3.multiselect(
             "Natureza:",
-            sorted(df_rec['natureza'].unique()),
+            nat_disp,
+            default=nat_disp,
             key="nat_receita"
         )
 
-        df_rf = df_rec[(df_rec['mes'].isin(ms_r)) & (df_rec['categoria'].isin(cat_sel))]
+        df_rf = df_base.copy()
+
+        if ms_r:
+            df_rf = df_rf[df_rf['mes'].isin(ms_r)]
+        else:
+            df_rf = df_rf.iloc[0:0]
+
+        if cat_sel:
+            df_rf = df_rf[df_rf['categoria'].isin(cat_sel)]
+        else:
+            df_rf = df_rf.iloc[0:0]
+
         if nat_sel:
             df_rf = df_rf[df_rf['natureza'].isin(nat_sel)]
+        else:
+            df_rf = df_rf.iloc[0:0]
 
         if not df_rf.empty:
             v_real = df_rf['realizado'].sum()
-            v_orc = df_rec[df_rec['mes'] == max(ms_r)].groupby('codigo_full')['orcado'].max().sum()
+
+            ult_comp = (
+                df_rf[['ano', 'mes']]
+                .drop_duplicates()
+                .sort_values(['ano', 'mes'])
+                .iloc[-1]
+            )
+            ano_ref = int(ult_comp['ano'])
+            mes_ref = int(ult_comp['mes'])
+
+            df_orc_ref = df_base[(df_base['ano'] == ano_ref) & (df_base['mes'] == mes_ref)].copy()
+
+            if cat_sel:
+                df_orc_ref = df_orc_ref[df_orc_ref['categoria'].isin(cat_sel)]
+            if nat_sel:
+                df_orc_ref = df_orc_ref[df_orc_ref['natureza'].isin(nat_sel)]
+
+            v_orc = df_orc_ref.groupby('codigo_full')['orcado'].max().sum()
 
             k1, k2, k3 = st.columns(3)
             k1.metric("Orçado Atual", f"R$ {v_orc:,.2f}")
             k2.metric("Realizado", f"R$ {v_real:,.2f}")
             k3.metric("Atingimento", f"{(v_real / v_orc * 100 if v_orc != 0 else 0):.1f}%")
 
-            df_g = df_rf.groupby('mes').agg({'realizado': 'sum'}).reset_index()
-            df_g['previsao'] = [
-                df_rf[df_rf['mes'] == m].groupby('codigo_full')['previsao'].max().sum()
-                for m in df_g['mes']
-            ]
+            df_real = (
+                df_rf.groupby(['ano', 'mes'], as_index=False)
+                .agg({'realizado': 'sum'})
+            )
+
+            df_prev = (
+                df_rf.groupby(['ano', 'mes', 'codigo_full'], as_index=False)['previsao']
+                .max()
+                .groupby(['ano', 'mes'], as_index=False)['previsao']
+                .sum()
+            )
+
+            df_g = df_real.merge(df_prev, on=['ano', 'mes'], how='left').fillna(0)
+            df_g = df_g.sort_values(['ano', 'mes'])
+            df_g['competencia'] = df_g.apply(
+                lambda r: f"{MESES_NOMES[int(r['mes']) - 1]}/{int(r['ano'])}",
+                axis=1
+            )
 
             fig = go.Figure()
             fig.add_trace(go.Bar(
-                x=df_g['mes'].map(lambda x: MESES_NOMES[x - 1]),
+                x=df_g['competencia'],
                 y=df_g['realizado'],
                 name="Realizado",
                 marker_color='#2E7D32'
             ))
             fig.add_trace(go.Scatter(
-                x=df_g['mes'].map(lambda x: MESES_NOMES[x - 1]),
+                x=df_g['competencia'],
                 y=df_g['previsao'],
                 name="Previsão",
                 line=dict(color='#FF9800', width=3, dash='dot')
@@ -1161,33 +1225,80 @@ with tab1:
             st.plotly_chart(fig, use_container_width=True)
 
             st.dataframe(
-                df_rf[['categoria', 'codigo_full', 'natureza', 'realizado', 'orcado']].style.format({
+                df_rf[['ano', 'mes', 'categoria', 'codigo_full', 'natureza', 'realizado', 'orcado']].sort_values(['ano', 'mes']).style.format({
                     'realizado': '{:,.2f}',
                     'orcado': '{:,.2f}'
                 }),
                 width='stretch'
             )
+        else:
+            st.info("Não há dados de receita para os filtros selecionados.")
+    else:
+        st.info("Importe dados de receita para visualizar esta aba.")
+
 
 # --- ABA 2: DESPESAS ---
 with tab2:
     if not df_desp.empty:
-        f1, f2, f3 = st.columns(3)
+        f0, f1, f2, f3 = st.columns(4)
+
+        anos_disp = sorted(df_desp['ano'].dropna().astype(int).unique().tolist())
+        anos_sel = f0.multiselect(
+            "Ano:",
+            anos_disp,
+            default=anos_disp,
+            key="ano_despesa"
+        )
+
+        df_base = df_desp.copy()
+        if anos_sel:
+            df_base = df_base[df_base['ano'].isin(anos_sel)]
+        else:
+            df_base = df_base.iloc[0:0]
+
+        meses_disp = sorted(df_base['mes'].dropna().astype(int).unique().tolist()) if not df_base.empty else []
         ms_d = f1.multiselect(
             "Meses:",
-            sorted(df_desp['mes'].unique()),
-            default=df_desp['mes'].unique(),
+            meses_disp,
+            default=meses_disp,
             format_func=lambda x: MESES_NOMES[x - 1],
             key="ms_despesa"
         )
-        fs = f2.multiselect("Função:", sorted(df_desp['funcao'].unique()), key="func_despesa")
-        sf = f3.multiselect("Subfunção:", sorted(df_desp['subfuncao'].unique()), key="subf_despesa")
+
+        fs = f2.multiselect(
+            "Função:",
+            sorted(df_base['funcao'].dropna().unique()) if not df_base.empty else [],
+            key="func_despesa"
+        )
+
+        sf = f3.multiselect(
+            "Subfunção:",
+            sorted(df_base['subfuncao'].dropna().unique()) if not df_base.empty else [],
+            key="subf_despesa"
+        )
 
         f4, f5, f6 = st.columns(3)
-        ps = f4.multiselect("Programa:", sorted(df_desp['programa'].unique()), key="prog_despesa")
-        fts = f5.multiselect("Fonte:", sorted(df_desp['fonte'].unique()), key="font_despesa")
+
+        ps = f4.multiselect(
+            "Programa:",
+            sorted(df_base['programa'].dropna().unique()) if not df_base.empty else [],
+            key="prog_despesa"
+        )
+
+        fts = f5.multiselect(
+            "Fonte:",
+            sorted(df_base['fonte'].dropna().unique()) if not df_base.empty else [],
+            key="font_despesa"
+        )
+
         bd = f6.text_input("Natureza (Contém):", key="busca_despesa")
 
-        df_f = df_desp[df_desp['mes'].isin(ms_d)]
+        df_f = df_base.copy()
+
+        if ms_d:
+            df_f = df_f[df_f['mes'].isin(ms_d)]
+        else:
+            df_f = df_f.iloc[0:0]
 
         if fs:
             df_f = df_f[df_f['funcao'].isin(fs)]
@@ -1198,14 +1309,28 @@ with tab2:
         if fts:
             df_f = df_f[df_f['fonte'].isin(fts)]
         if bd:
-            df_f = df_f[df_f['natureza'].str.contains(bd, case=False, na=False)]
+            df_f = df_f[df_f['natureza'].astype(str).str.contains(bd, case=False, na=False)]
 
         if not df_f.empty:
-            m_max = max(ms_d)
+            ult_comp = (
+                df_f[['ano', 'mes']]
+                .drop_duplicates()
+                .sort_values(['ano', 'mes'])
+                .iloc[-1]
+            )
+            ano_ref = int(ult_comp['ano'])
+            mes_ref = int(ult_comp['mes'])
+
             col_chave = ['funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza']
 
             df_exec = df_f.groupby(col_chave, as_index=False)[['empenhado', 'liquidado', 'pago']].sum()
-            df_aut = df_f[df_f['mes'] == m_max].groupby(col_chave, as_index=False)[['cred_autorizado']].sum()
+
+            df_aut = (
+                df_f[(df_f['ano'] == ano_ref) & (df_f['mes'] == mes_ref)]
+                .groupby(col_chave, as_index=False)[['cred_autorizado']]
+                .sum()
+            )
+
             df_view = df_exec.merge(df_aut, on=col_chave, how='left').fillna(0)
 
             k1, k2, k3, k4 = st.columns(4)
@@ -1226,6 +1351,13 @@ with tab2:
                 }),
                 width='stretch'
             )
+
+            st.caption("Empenhado, liquidado e pago somam os meses selecionados. Crédito autorizado considera somente a última competência do filtro.")
+        else:
+            st.info("Não há dados de despesa para os filtros selecionados.")
+    else:
+        st.info("Importe dados de despesa para visualizar esta aba.")
+
 
 # --- ABA 3: COMPARATIVO ---
 with tab3:
