@@ -95,6 +95,7 @@ def inicializar_banco():
         conn.execute("ALTER TABLE receitas ADD COLUMN categoria TEXT DEFAULT 'Não Classificada'")
     except:
         pass
+
     conn.execute('''
         CREATE TABLE IF NOT EXISTS despesas (
             mes INTEGER, ano INTEGER, uo TEXT, funcao TEXT, subfuncao TEXT,
@@ -174,6 +175,9 @@ def somar_campos(df, cols):
         return {c: 0.0 for c in cols}
     return {c: float(df[c].sum()) for c in cols}
 
+# ----------------------------
+# BASES DOS RELATÓRIOS LRF
+# ----------------------------
 def preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
     if df_rec.empty:
         return pd.DataFrame(columns=[
@@ -319,6 +323,9 @@ def preparar_base_funcional_lrf(df_desp, meses_bim, meses_ate_agora):
     base = base.fillna(0)
     return base
 
+# ----------------------------
+# GERADORES EXCEL LRF
+# ----------------------------
 def gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora):
     base = preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora)
     periodo = periodo_bimestre_extenso(meses_bim)
@@ -406,7 +413,11 @@ def gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora):
             worksheet.write_number(row, 7, vals.get('saldo', 0), fmt_num)
             row += 1
 
-        total_geral = {'previsao_inicial': 0, 'previsao_atualizada': 0, 'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0, 'perc_bim': 0, 'perc_ate': 0}
+        total_geral = {
+            'previsao_inicial': 0, 'previsao_atualizada': 0,
+            'no_bimestre': 0, 'ate_bimestre': 0, 'saldo': 0,
+            'perc_bim': 0, 'perc_ate': 0
+        }
 
         for nome_grupo, cats in grupos.items():
             df_g = base[base['categoria'].isin(cats)].copy()
@@ -503,25 +514,37 @@ def gerar_excel_anexo1a(df_desp, df_rec, meses_bim, meses_ate_agora):
         vals['restos'] = 0.0
         return vals
 
-    mask_correntes = (base['grupo'] == '3') & (base['modalidade'] != '91')
-    mask_corr_50 = mask_correntes & (base['modalidade'] == '50')
-    mask_corr_90 = mask_correntes & (base['modalidade'] == '90')
-    mask_capital = (base['grupo'] == '4') & (base['modalidade'] != '91')
-    mask_cap_90 = mask_capital & (base['modalidade'] == '90')
-    mask_intra = base['modalidade'] == '91'
+    if base.empty:
+        mask_vazia = pd.Series(dtype=bool)
+        v_correntes = bloco(mask_vazia)
+        v_corr_50 = bloco(mask_vazia)
+        v_corr_90 = bloco(mask_vazia)
+        v_capital = bloco(mask_vazia)
+        v_cap_90 = bloco(mask_vazia)
+        v_intra = bloco(mask_vazia)
+        v_exceto_intra = bloco(mask_vazia)
+        v_subtotal = bloco(mask_vazia)
+    else:
+        mask_correntes = (base['grupo'] == '3') & (base['modalidade'] != '91')
+        mask_corr_50 = mask_correntes & (base['modalidade'] == '50')
+        mask_corr_90 = mask_correntes & (base['modalidade'] == '90')
+        mask_capital = (base['grupo'] == '4') & (base['modalidade'] != '91')
+        mask_cap_90 = mask_capital & (base['modalidade'] == '90')
+        mask_intra = base['modalidade'] == '91'
 
-    v_correntes = bloco(mask_correntes)
-    v_corr_50 = bloco(mask_corr_50)
-    v_corr_90 = bloco(mask_corr_90)
-    v_capital = bloco(mask_capital)
-    v_cap_90 = bloco(mask_cap_90)
-    v_intra = bloco(mask_intra)
-    v_exceto_intra = bloco(mask_correntes | mask_capital)
-    v_subtotal = bloco(pd.Series([True] * len(base), index=base.index) if not base.empty else pd.Series(dtype=bool))
+        v_correntes = bloco(mask_correntes)
+        v_corr_50 = bloco(mask_corr_50)
+        v_corr_90 = bloco(mask_corr_90)
+        v_capital = bloco(mask_capital)
+        v_cap_90 = bloco(mask_cap_90)
+        v_intra = bloco(mask_intra)
+        v_exceto_intra = bloco(mask_correntes | mask_capital)
+        v_subtotal = bloco(pd.Series([True] * len(base), index=base.index))
 
     v_divida_zero = {
-        'orcado_inicial': 0.0, 'cred_autorizado': 0.0, 'emp_no_bim': 0.0, 'emp_ate': 0.0,
-        'saldo_emp': 0.0, 'liq_no_bim': 0.0, 'liq_ate': 0.0, 'saldo_liq': 0.0,
+        'orcado_inicial': 0.0, 'cred_autorizado': 0.0,
+        'emp_no_bim': 0.0, 'emp_ate': 0.0, 'saldo_emp': 0.0,
+        'liq_no_bim': 0.0, 'liq_ate': 0.0, 'saldo_liq': 0.0,
         'pago_ate': 0.0, 'restos': 0.0
     }
 
@@ -601,12 +624,12 @@ def gerar_excel_anexo1a(df_desp, df_rec, meses_bim, meses_ate_agora):
         worksheet.merge_range(0, 3, 0, 5, 'DESPESAS EMPENHADAS', fmt_header)
         worksheet.write(1, 3, f'NO BIMESTRE\n{periodo}', fmt_header)
         worksheet.write(1, 4, f'ATÉ O BIMESTRE\n{periodo}', fmt_header)
-        worksheet.write(1, 5, 'Saldo\n(g) = c-f', fmt_header)
+        worksheet.write(1, 5, 'Saldo\n(g)=c-f', fmt_header)
 
         worksheet.merge_range(0, 6, 0, 8, 'DESPESAS EXECUTADAS', fmt_header)
         worksheet.write(1, 6, 'LIQUIDADAS', fmt_header)
         worksheet.write(1, 7, 'LIQUIDADAS', fmt_header)
-        worksheet.write(1, 8, 'Saldo\n(i) = c-h', fmt_header)
+        worksheet.write(1, 8, 'Saldo\n(i)=c-h', fmt_header)
         worksheet.write(2, 3, '', fmt_header)
         worksheet.write(2, 4, '', fmt_header)
         worksheet.write(2, 5, '', fmt_header)
@@ -659,7 +682,10 @@ def gerar_excel_anexo2(df_desp, meses_bim, meses_ate_agora):
     linhas = []
 
     if not base.empty:
-        funcoes_ordenadas = sorted(base['funcao'].astype(str).unique(), key=lambda x: int(float(x)) if str(x).replace('.', '', 1).isdigit() else 9999)
+        funcoes_ordenadas = sorted(
+            base['funcao'].astype(str).unique(),
+            key=lambda x: int(float(x)) if str(x).replace('.', '', 1).isdigit() else 9999
+        )
 
         for funcao in funcoes_ordenadas:
             df_f = base[base['funcao'].astype(str) == str(funcao)].copy()
@@ -680,7 +706,11 @@ def gerar_excel_anexo2(df_desp, meses_bim, meses_ate_agora):
 
             linhas.append((f"{nome_funcao(str(funcao))} - {str(funcao)}", vals_f, 'grupo'))
 
-            subfs = sorted(df_f['subfuncao'].astype(str).unique(), key=lambda x: int(float(x)) if str(x).replace('.', '', 1).isdigit() else 9999)
+            subfs = sorted(
+                df_f['subfuncao'].astype(str).unique(),
+                key=lambda x: int(float(x)) if str(x).replace('.', '', 1).isdigit() else 9999
+            )
+
             for subf in subfs:
                 df_s = df_f[df_f['subfuncao'].astype(str) == str(subf)].copy()
                 vals_s = {
@@ -734,6 +764,7 @@ def gerar_excel_anexo2(df_desp, meses_bim, meses_ate_agora):
         worksheet.set_column('A:A', 32)
         worksheet.set_column('B:C', 16)
         worksheet.set_column('D:K', 14)
+        worksheet.set_column('L:L', 16)
 
         worksheet.merge_range(0, 0, 2, 0, 'FUNÇÃO/\nSUBFUNÇÃO', fmt_header)
         worksheet.merge_range(0, 1, 2, 1, 'DOTAÇÃO\nINICIAL', fmt_header)
@@ -779,3 +810,388 @@ def gerar_excel_anexo2(df_desp, meses_bim, meses_ate_agora):
             worksheet.write_number(row, 5, vals.get('perc_emp', 0), fmt_perc)
             worksheet.write_number(row, 6, vals.get('saldo_emp', 0), fmt_num)
             worksheet.write_number(row, 7, vals.get('liq_no_bim', 0), fmt_num)
+            worksheet.write_number(row, 8, vals.get('liq_ate', 0), fmt_num)
+            worksheet.write_number(row, 9, vals.get('perc_liq', 0), fmt_perc)
+            worksheet.write_number(row, 10, vals.get('saldo_liq', 0), fmt_num)
+            worksheet.write_number(row, 11, vals.get('restos', 0), fmt_num)
+            row += 1
+
+        worksheet.freeze_panes(3, 1)
+
+    return output.getvalue()
+
+inicializar_banco()
+
+# --- SIDEBAR ---
+with st.sidebar:
+    st.subheader("📥 Importar Dados")
+    tipo_dado = st.radio("Tipo:", ["Receita", "Despesa"])
+    arquivo = st.file_uploader(f"Arquivo {tipo_dado}", type=["xlsx"])
+
+    if arquivo and st.button("🚀 Processar Dados"):
+        m_final = 1
+        df_scan = pd.read_excel(arquivo, nrows=10, header=None)
+        for r in range(len(df_scan)):
+            for celula in df_scan.iloc[r]:
+                for nome, num in MESES_MAPA.items():
+                    if nome in str(celula).upper():
+                        m_final = num
+
+        conn = sqlite3.connect(DB_NAME)
+
+        if tipo_dado == "Receita":
+            df = pd.read_excel(arquivo, skiprows=7)
+            dados = []
+            for _, row in df.iterrows():
+                cod = str(row.iloc[0]).strip().replace('"', '')
+                if re.match(r'^\d', cod) and cod[-1] != '0':
+                    real = limpar_f(row.iloc[6])
+                    if cod.startswith('9'):
+                        real = -abs(real)
+                    cur = conn.execute("SELECT categoria FROM receitas WHERE codigo_full = ?", (cod,))
+                    r_cat = cur.fetchone()
+                    cat_atual = r_cat[0] if r_cat else "Não Classificada"
+                    dados.append((
+                        m_final, 2026, cod, str(row.iloc[1]).replace('"', ''),
+                        limpar_f(row.iloc[3]), real, limpar_f(row.iloc[5]), cat_atual
+                    ))
+
+            conn.execute("DELETE FROM receitas WHERE ano = ? AND mes = ?", (2026, m_final))
+            conn.executemany("INSERT INTO receitas VALUES (?,?,?,?,?,?,?,?)", dados)
+
+        else:
+            df = pd.read_excel(arquivo, skiprows=6)
+            df.columns = df.columns.str.strip().str.upper()
+            linhas = []
+
+            for _, row in df.iterrows():
+                uo = normalizar_chave(row.get('UO', ''))
+                ug = normalizar_chave(row.get('UG', ''))
+
+                if uo != "":
+                    elem = limpar_f(row.get('ELEMENTO', 0))
+                    tem_execucao = (ug != '0' and elem != 0)
+
+                    v_emp_cum = limpar_f(row.get('EMPENHADO', 0)) if tem_execucao else 0.0
+                    v_liq_cum = limpar_f(row.get('LIQUIDADO', 0)) if tem_execucao else 0.0
+                    v_pag_cum = limpar_f(row.get('PAGO', 0)) if tem_execucao else 0.0
+
+                    linhas.append({
+                        'uo': uo,
+                        'funcao': normalizar_chave(row.get('FUNÇÃO', '')),
+                        'subfuncao': normalizar_chave(row.get('SUBFUNÇÃO', '')),
+                        'programa': normalizar_chave(row.get('PROGRAMA', '')),
+                        'projeto': normalizar_chave(row.get('PAOE', '')),
+                        'natureza': normalizar_chave(row.get('NATUREZA DESPESA', '')),
+                        'fonte': normalizar_chave(row.get('FONTE', '')),
+                        'orcado_inicial': limpar_f(row.get('ORÇADO INICIAL', 0)),
+                        'cred_autorizado': limpar_f(row.get('CRÉDITO AUTORIZADO', 0)),
+                        'empenhado_cum': v_emp_cum,
+                        'liquidado_cum': v_liq_cum,
+                        'pago_cum': v_pag_cum
+                    })
+
+            if linhas:
+                df_mes = pd.DataFrame(linhas)
+                chaves = ['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte']
+
+                df_mes = df_mes.groupby(chaves, as_index=False).agg({
+                    'orcado_inicial': 'sum',
+                    'cred_autorizado': 'sum',
+                    'empenhado_cum': 'sum',
+                    'liquidado_cum': 'sum',
+                    'pago_cum': 'sum'
+                })
+
+                if m_final > 1:
+                    df_ant = pd.read_sql("""
+                        SELECT
+                            uo, funcao, subfuncao, programa, projeto, natureza, fonte,
+                            SUM(empenhado) as empenhado_ant,
+                            SUM(liquidado) as liquidado_ant,
+                            SUM(pago) as pago_ant
+                        FROM despesas
+                        WHERE ano = 2026 AND mes < ?
+                        GROUP BY uo, funcao, subfuncao, programa, projeto, natureza, fonte
+                    """, conn, params=(m_final,))
+                else:
+                    df_ant = pd.DataFrame(columns=chaves + ['empenhado_ant', 'liquidado_ant', 'pago_ant'])
+
+                df_mes = df_mes.merge(df_ant, on=chaves, how='left').fillna(0)
+                df_mes['empenhado'] = df_mes['empenhado_cum'] - df_mes['empenhado_ant']
+                df_mes['liquidado'] = df_mes['liquidado_cum'] - df_mes['liquidado_ant']
+                df_mes['pago'] = df_mes['pago_cum'] - df_mes['pago_ant']
+
+                dados = [
+                    (
+                        m_final, 2026,
+                        r['uo'], r['funcao'], r['subfuncao'], r['programa'],
+                        r['projeto'], r['natureza'], r['fonte'],
+                        float(r['orcado_inicial']), float(r['cred_autorizado']),
+                        float(r['empenhado']), float(r['liquidado']), float(r['pago'])
+                    )
+                    for _, r in df_mes.iterrows()
+                ]
+
+                conn.execute("DELETE FROM despesas WHERE ano = 2026 AND mes = ?", (m_final,))
+                conn.executemany("INSERT INTO despesas VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dados)
+
+        conn.commit()
+        conn.close()
+        st.rerun()
+
+    st.divider()
+    st.subheader("💾 Backup")
+    conn = sqlite3.connect(DB_NAME)
+    df_bkp = pd.read_sql("SELECT * FROM receitas", conn)
+    conn.close()
+
+    if not df_bkp.empty:
+        csv = df_bkp.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Baixar Backup", data=csv, file_name="backup_fiplan.csv", mime="text/csv")
+
+    file_restore = st.file_uploader("📂 Restaurar", type=["csv"])
+    if file_restore and st.button("🔄 Restaurar"):
+        df_res = pd.read_csv(file_restore)
+        conn = sqlite3.connect(DB_NAME)
+        df_res.to_sql("receitas", conn, if_exists="replace", index=False)
+        conn.commit()
+        conn.close()
+        st.success("Restaurado!")
+        st.rerun()
+
+    st.divider()
+    st.subheader("🗑️ Limpeza")
+    confirma_limpeza = st.checkbox("Confirmo apagar tudo")
+    if st.button("🗑️ Limpar Dados"):
+        if confirma_limpeza:
+            limpar_todos_dados()
+            st.rerun()
+        else:
+            st.warning("Marque a confirmação.")
+
+# --- CARGA ---
+conn = sqlite3.connect(DB_NAME)
+df_rec = pd.read_sql("SELECT * FROM receitas", conn)
+df_desp = pd.read_sql("SELECT * FROM despesas", conn)
+conn.close()
+
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Receitas", "💸 Despesas", "⚖️ Comparativo", "📄 Relatórios LRF"])
+
+# --- ABA 1: RECEITAS ---
+with tab1:
+    if not df_rec.empty:
+        with st.expander("🏷️ Classificar Categorias de Receita"):
+            c1, c2, c3 = st.columns([2, 2, 1])
+            sel_nat = c1.selectbox("Natureza:", sorted(df_rec['natureza'].unique()), key="sel_nat_class")
+            sel_cat = c2.selectbox("Atribuir Categoria:", CATEGORIAS_REC, key="sel_cat_class")
+            if c3.button("Salvar Categoria"):
+                conn = sqlite3.connect(DB_NAME)
+                conn.execute("UPDATE receitas SET categoria = ? WHERE natureza = ?", (sel_cat, sel_nat))
+                conn.commit()
+                conn.close()
+                st.rerun()
+
+        st.divider()
+
+        f1, f2, f3 = st.columns(3)
+        ms_r = f1.multiselect(
+            "Meses:",
+            sorted(df_rec['mes'].unique()),
+            default=df_rec['mes'].unique(),
+            format_func=lambda x: MESES_NOMES[x-1],
+            key="ms_receita"
+        )
+        cat_sel = f2.multiselect(
+            "Categoria:",
+            sorted(df_rec['categoria'].unique()),
+            default=sorted(df_rec['categoria'].unique()),
+            key="cat_receita"
+        )
+        nat_sel = f3.multiselect(
+            "Natureza:",
+            sorted(df_rec['natureza'].unique()),
+            key="nat_receita"
+        )
+
+        df_rf = df_rec[(df_rec['mes'].isin(ms_r)) & (df_rec['categoria'].isin(cat_sel))]
+        if nat_sel:
+            df_rf = df_rf[df_rf['natureza'].isin(nat_sel)]
+
+        if not df_rf.empty:
+            v_real = df_rf['realizado'].sum()
+            v_orc = df_rec[df_rec['mes'] == max(ms_r)].groupby('codigo_full')['orcado'].max().sum()
+
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Orçado Atual", f"R$ {v_orc:,.2f}")
+            k2.metric("Realizado", f"R$ {v_real:,.2f}")
+            k3.metric("Atingimento", f"{(v_real/v_orc*100 if v_orc!=0 else 0):.1f}%")
+
+            df_g = df_rf.groupby('mes').agg({'realizado': 'sum'}).reset_index()
+            df_g['previsao'] = [
+                df_rf[df_rf['mes'] == m].groupby('codigo_full')['previsao'].max().sum()
+                for m in df_g['mes']
+            ]
+
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]),
+                y=df_g['realizado'],
+                name="Realizado",
+                marker_color='#2E7D32'
+            ))
+            fig.add_trace(go.Scatter(
+                x=df_g['mes'].map(lambda x: MESES_NOMES[x-1]),
+                y=df_g['previsao'],
+                name="Previsão",
+                line=dict(color='#FF9800', width=3, dash='dot')
+            ))
+            fig.update_layout(
+                height=350,
+                margin=dict(l=0, r=0, t=30, b=0),
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(
+                df_rf[['categoria', 'codigo_full', 'natureza', 'realizado', 'orcado']].style.format({
+                    'realizado': '{:,.2f}', 'orcado': '{:,.2f}'
+                }),
+                width='stretch'
+            )
+
+# --- ABA 2: DESPESAS ---
+with tab2:
+    if not df_desp.empty:
+        f1, f2, f3 = st.columns(3)
+        ms_d = f1.multiselect(
+            "Meses:",
+            sorted(df_desp['mes'].unique()),
+            default=df_desp['mes'].unique(),
+            format_func=lambda x: MESES_NOMES[x-1],
+            key="ms_despesa"
+        )
+        fs = f2.multiselect("Função:", sorted(df_desp['funcao'].unique()), key="func_despesa")
+        sf = f3.multiselect("Subfunção:", sorted(df_desp['subfuncao'].unique()), key="subf_despesa")
+
+        f4, f5, f6 = st.columns(3)
+        ps = f4.multiselect("Programa:", sorted(df_desp['programa'].unique()), key="prog_despesa")
+        fts = f5.multiselect("Fonte:", sorted(df_desp['fonte'].unique()), key="font_despesa")
+        bd = f6.text_input("Natureza (Contém):", key="busca_despesa")
+
+        df_f = df_desp[df_desp['mes'].isin(ms_d)]
+
+        if fs:
+            df_f = df_f[df_f['funcao'].isin(fs)]
+        if sf:
+            df_f = df_f[df_f['subfuncao'].isin(sf)]
+        if ps:
+            df_f = df_f[df_f['programa'].isin(ps)]
+        if fts:
+            df_f = df_f[df_f['fonte'].isin(fts)]
+        if bd:
+            df_f = df_f[df_f['natureza'].str.contains(bd, case=False, na=False)]
+
+        if not df_f.empty:
+            m_max = max(ms_d)
+            col_chave = ['funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza']
+
+            df_exec = df_f.groupby(col_chave, as_index=False)[['empenhado', 'liquidado', 'pago']].sum()
+            df_aut = df_f[df_f['mes'] == m_max].groupby(col_chave, as_index=False)[['cred_autorizado']].sum()
+            df_view = df_exec.merge(df_aut, on=col_chave, how='left').fillna(0)
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Créd. Autorizado", f"R$ {df_view['cred_autorizado'].sum():,.2f}")
+            k2.metric("Empenhado", f"R$ {df_view['empenhado'].sum():,.2f}")
+            k3.metric("Liquidado", f"R$ {df_view['liquidado'].sum():,.2f}")
+            k4.metric("Pago", f"R$ {df_view['pago'].sum():,.2f}")
+
+            st.dataframe(
+                df_view[['funcao', 'subfuncao', 'programa', 'projeto', 'fonte', 'natureza',
+                         'cred_autorizado', 'empenhado', 'liquidado', 'pago']].style.format({
+                    'cred_autorizado': '{:,.2f}',
+                    'empenhado': '{:,.2f}',
+                    'liquidado': '{:,.2f}',
+                    'pago': '{:,.2f}'
+                }),
+                width='stretch'
+            )
+
+# --- ABA 3: COMPARATIVO ---
+with tab3:
+    st.subheader("⚖️ Confronto Geral Financeiro e Orçamentário")
+    if not df_rec.empty or not df_desp.empty:
+        meses_conj = sorted(list(set(df_rec['mes'].unique()) | set(df_desp['mes'].unique())))
+        ms_c = st.multiselect(
+            "Filtrar Meses para Confronto:",
+            meses_conj,
+            default=meses_conj,
+            format_func=lambda x: MESES_NOMES[x-1],
+            key="ms_confronto"
+        )
+
+        tr = df_rec[df_rec['mes'].isin(ms_c)]['realizado'].sum() if not df_rec.empty else 0
+        te = df_desp[df_desp['mes'].isin(ms_c)]['empenhado'].sum() if not df_desp.empty else 0
+        tl = df_desp[df_desp['mes'].isin(ms_c)]['liquidado'].sum() if not df_desp.empty else 0
+        tp = df_desp[df_desp['mes'].isin(ms_c)]['pago'].sum() if not df_desp.empty else 0
+
+        kc1, kc2, kc3, kc4 = st.columns(4)
+        kc1.metric("Receita Arrecadada", f"R$ {tr:,.2f}")
+        kc2.metric("Despesa Empenhada", f"R$ {te:,.2f}")
+        kc3.metric("Despesa Liquidada", f"R$ {tl:,.2f}")
+        kc4.metric("Despesa Paga", f"R$ {tp:,.2f}")
+
+        st.divider()
+
+        m1, m2 = st.columns(2)
+        m1.info(f"**Superávit Financeiro (Receita - Pago):** \n R$ {tr - tp:,.2f}")
+        m2.warning(f"**Superávit Orçamentário (Receita - Empenhado):** \n R$ {tr - te:,.2f}")
+
+        fig_c = go.Figure()
+        fig_c.add_trace(go.Bar(name='Receita', x=['Confronto'], y=[tr], marker_color='green'))
+        fig_c.add_trace(go.Bar(name='Empenhado', x=['Confronto'], y=[te], marker_color='orange'))
+        fig_c.update_layout(height=400, barmode='group', margin=dict(l=0, r=0, t=30, b=0))
+        st.plotly_chart(fig_c, use_container_width=True)
+
+# --- ABA 4: RELATÓRIOS LRF ---
+with tab4:
+    st.subheader("📄 Relatórios Bimestrais da LRF (RREO)")
+
+    if df_rec.empty or df_desp.empty:
+        st.info("Importe dados para gerar os anexos da LRF.")
+    else:
+        bimestre_sel = st.selectbox("Selecione o Bimestre:", list(BIMESTRES.keys()))
+        meses_bim = BIMESTRES[bimestre_sel]
+        meses_ate_agora = list(range(1, max(meses_bim) + 1))
+
+        c_lrf1, c_lrf2, c_lrf3 = st.columns(3)
+
+        with c_lrf1:
+            st.write("**Anexo I - Receitas**")
+            st.download_button(
+                "📥 Baixar Anexo I",
+                data=gerar_excel_anexo1(df_rec, meses_bim, meses_ate_agora),
+                file_name=f"LRF_Anexo_I_{bimestre_sel}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        with c_lrf2:
+            st.write("**Anexo IA - Despesas**")
+            st.download_button(
+                "📥 Baixar Anexo IA",
+                data=gerar_excel_anexo1a(df_desp, df_rec, meses_bim, meses_ate_agora),
+                file_name=f"LRF_Anexo_IA_{bimestre_sel}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        with c_lrf3:
+            st.write("**Anexo II - Funcional**")
+            st.download_button(
+                "📥 Baixar Anexo II",
+                data=gerar_excel_anexo2(df_desp, meses_bim, meses_ate_agora),
+                file_name=f"LRF_Anexo_II_{bimestre_sel}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        st.divider()
+        st.caption("Nota: Os valores de arrecadação e execução são acumulados do início do exercício até o bimestre selecionado.")
