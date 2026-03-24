@@ -3,6 +3,7 @@ import pandas as pd
 import sqlite3
 import plotly.graph_objects as go
 import re
+import io
 
 # --- CONFIGURAÇÃO ---
 DB_NAME = 'dados_gestao_integrada.db'
@@ -12,6 +13,14 @@ MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun", "Jul", "Ago", "Set", "
 MESES_MAPA = {
     "JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "ABRIL": 4, "MAIO": 5, "JUNHO": 6,
     "JULHO": 7, "AGOSTO": 8, "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12
+}
+BIMESTRES = {
+    "1º Bimestre (Jan-Fev)": [1, 2],
+    "2º Bimestre (Mar-Abr)": [3, 4],
+    "3º Bimestre (Mai-Jun)": [5, 6],
+    "4º Bimestre (Jul-Ago)": [7, 8],
+    "5º Bimestre (Set-Out)": [9, 10],
+    "6º Bimestre (Nov-Dez)": [11, 12]
 }
 CATEGORIAS_REC = [
     "Receita Tributária",
@@ -72,6 +81,22 @@ def limpar_todos_dados():
     conn.commit()
     conn.close()
 
+def gerar_excel_lrf(df_final):
+    output = io.BytesIO()
+    # Usando xlsxwriter para melhor compatibilidade com formatação de modelos
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df_final.to_excel(writer, index=False, sheet_name='Anexo_LRF')
+        workbook = writer.book
+        worksheet = writer.sheets['Anexo_LRF']
+        # Formatação básica para valores monetários
+        fmt_money = workbook.add_format({'num_format': '#,##0.00'})
+        for idx, col in enumerate(df_final.columns):
+            if df_final[col].dtype == 'float64':
+                worksheet.set_column(idx, idx, 18, fmt_money)
+            else:
+                worksheet.set_column(idx, idx, 25)
+    return output.getvalue()
+
 inicializar_banco()
 
 # --- SIDEBAR ---
@@ -116,7 +141,7 @@ with st.sidebar:
                     v_liq_cum = limpar_f(row.get('LIQUIDADO', 0)) if tem_execucao else 0.0
                     v_pag_cum = limpar_f(row.get('PAGO', 0)) if tem_execucao else 0.0
                     linhas.append({'uo': uo, 'funcao': normalizar_chave(row.get('FUNÇÃO', '')), 'subfuncao': normalizar_chave(row.get('SUBFUNÇÃO', '')), 'programa': normalizar_chave(row.get('PROGRAMA', '')), 'projeto': normalizar_chave(row.get('PAOE', '')), 'natureza': normalizar_chave(row.get('NATUREZA DESPESA', '')), 'fonte': normalizar_chave(row.get('FONTE', '')), 'orcado_inicial': limpar_f(row.get('ORÇADO INICIAL', 0)), 'cred_autorizado': limpar_f(row.get('CRÉDITO AUTORIZADO', 0)), 'empenhado_cum': v_emp_cum, 'liquidado_cum': v_liq_cum, 'pago_cum': v_pag_cum})
-           
+            
             if linhas:
                 df_mes = pd.DataFrame(linhas); chaves = ['uo', 'funcao', 'subfuncao', 'programa', 'projeto', 'natureza', 'fonte']
                 df_mes = df_mes.groupby(chaves, as_index=False).agg({'orcado_inicial': 'sum', 'cred_autorizado': 'sum', 'empenhado_cum': 'sum', 'liquidado_cum': 'sum', 'pago_cum': 'sum'})
@@ -138,7 +163,7 @@ with st.sidebar:
     conn = sqlite3.connect(DB_NAME); df_bkp = pd.read_sql("SELECT * FROM receitas", conn); conn.close()
     if not df_bkp.empty:
         csv = df_bkp.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Baixar Backup", data=csv, file_name="backup_receitas.csv", mime="text/csv")
+        st.download_button("📥 Baixar Backup", data=csv, file_name="backup_fiplan.csv", mime="text/csv")
     file_restore = st.file_uploader("📂 Restaurar", type=["csv"])
     if file_restore and st.button("🔄 Restaurar"):
         df_res = pd.read_csv(file_restore); conn = sqlite3.connect(DB_NAME); df_res.to_sql("receitas", conn, if_exists="replace", index=False); conn.commit(); conn.close(); st.success("Restaurado!"); st.rerun()
@@ -156,7 +181,7 @@ df_rec = pd.read_sql("SELECT * FROM receitas", conn)
 df_desp = pd.read_sql("SELECT * FROM despesas", conn)
 conn.close()
 
-tab1, tab2, tab3 = st.tabs(["📊 Receitas", "💸 Despesas", "⚖️ Comparativo"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Receitas", "💸 Despesas", "⚖️ Comparativo", "📄 Relatórios LRF"])
 
 # --- ABA 1: RECEITAS ---
 with tab1:
@@ -222,29 +247,50 @@ with tab3:
     st.subheader("⚖️ Confronto Geral Financeiro e Orçamentário")
     if not df_rec.empty or not df_desp.empty:
         ms_c = st.multiselect("Filtrar Meses para Confronto:", sorted(list(set(df_rec['mes'].unique()) | set(df_desp['mes'].unique()))), default=sorted(list(set(df_rec['mes'].unique()) | set(df_desp['mes'].unique()))), format_func=lambda x: MESES_NOMES[x-1], key="ms_confronto")
-       
         tr = df_rec[df_rec['mes'].isin(ms_c)]['realizado'].sum()
         te = df_desp[df_desp['mes'].isin(ms_c)]['empenhado'].sum()
         tl = df_desp[df_desp['mes'].isin(ms_c)]['liquidado'].sum()
         tp = df_desp[df_desp['mes'].isin(ms_c)]['pago'].sum()
-       
-        kc1, kc2, kc3, kc4 = st.columns(4)
-        kc1.metric("Receita Arrecadada", f"R$ {tr:,.2f}")
-        kc2.metric("Despesa Empenhada", f"R$ {te:,.2f}")
-        kc3.metric("Despesa Liquidada", f"R$ {tl:,.2f}")
-        kc4.metric("Despesa Paga", f"R$ {tp:,.2f}")
-       
+        kc1, kc2, kc3, kc4 = st.columns(4); kc1.metric("Receita Arrecadada", f"R$ {tr:,.2f}"); kc2.metric("Despesa Empenhada", f"R$ {te:,.2f}"); kc3.metric("Despesa Liquidada", f"R$ {tl:,.2f}"); kc4.metric("Despesa Paga", f"R$ {tp:,.2f}")
         st.divider()
-        m1, m2 = st.columns(2)
-        m1.info(f"**Superávit Financeiro (Receita - Pago):** \n R$ {tr - tp:,.2f}")
-        m2.warning(f"**Superávit Orçamentário (Receita - Empenhado):** \n R$ {tr - te:,.2f}")
-
+        m1, m2 = st.columns(2); m1.info(f"**Superávit Financeiro (Receita - Pago):** \n R$ {tr - tp:,.2f}"); m2.warning(f"**Superávit Orçamentário (Receita - Empenhado):** \n R$ {tr - te:,.2f}")
         fig_c = go.Figure()
-        fig_c.add_trace(go.Bar(name='Receita Arrecadada', x=['Confronto'], y=[tr], marker_color='green'))
-        fig_c.add_trace(go.Bar(name='Desp. Empenhada', x=['Confronto'], y=[te], marker_color='orange'))
-        fig_c.add_trace(go.Bar(name='Desp. Liquidada', x=['Confronto'], y=[tl], marker_color='#72A0C1'))
-        fig_c.add_trace(go.Bar(name='Desp. Paga', x=['Confronto'], y=[tp], marker_color='red'))
-        fig_c.update_layout(height=400, barmode='group', margin=dict(l=0, r=0, t=30, b=0))
-        st.plotly_chart(fig_c, use_container_width=True)
+        fig_c.add_trace(go.Bar(name='Receita', x=['Confronto'], y=[tr], marker_color='green'))
+        fig_c.add_trace(go.Bar(name='Empenhado', x=['Confronto'], y=[te], marker_color='orange'))
+        fig_c.update_layout(height=400, barmode='group', margin=dict(l=0, r=0, t=30, b=0)); st.plotly_chart(fig_c, use_container_width=True)
+
+# --- ABA 4: RELATÓRIOS LRF ---
+with tab4:
+    st.subheader("📄 Relatórios Bimestrais da LRF (RREO)")
+    if df_rec.empty or df_desp.empty:
+        st.info("Importe dados para gerar os anexos da LRF.")
     else:
-        st.info("Importe dados para visualizar o comparativo.")
+        bimestre_sel = st.selectbox("Selecione o Bimestre:", list(BIMESTRES.keys()))
+        meses_bim = BIMESTRES[bimestre_sel]
+        meses_ate_agora = list(range(1, max(meses_bim) + 1))
+        
+        c_lrf1, c_lrf2, c_lrf3 = st.columns(3)
+        
+        # ANEXO I - RECEITA
+        with c_lrf1:
+            st.write("**Anexo I - Receitas**")
+            df_anexo1 = df_rec[df_rec['mes'].isin(meses_ate_agora)].groupby(['categoria', 'natureza']).agg({'orcado':'max', 'realizado':'sum'}).reset_index()
+            df_anexo1.columns = ['Categoria', 'Natureza', 'Previsão Atualizada', 'Arrecadado Acumulado']
+            st.download_button("📥 Baixar Anexo I", data=gerar_excel_lrf(df_anexo1), file_name=f"LRF_Anexo_I_{bimestre_sel}.xlsx")
+
+        # ANEXO IA - DESPESA
+        with c_lrf2:
+            st.write("**Anexo IA - Despesas**")
+            df_anexo1a = df_desp[df_desp['mes'].isin(meses_ate_agora)].groupby(['natureza']).agg({'cred_autorizado':'max', 'empenhado':'sum', 'liquidado':'sum', 'pago':'sum'}).reset_index()
+            df_anexo1a.columns = ['Natureza', 'Dotação Atualizada', 'Empenhado', 'Liquidado', 'Pago']
+            st.download_button("📥 Baixar Anexo IA", data=gerar_excel_lrf(df_anexo1a), file_name=f"LRF_Anexo_IA_{bimestre_sel}.xlsx")
+
+        # ANEXO II - FUNÇÃO/SUBFUNÇÃO
+        with c_lrf3:
+            st.write("**Anexo II - Funcional**")
+            df_anexo2 = df_desp[df_desp['mes'].isin(meses_ate_agora)].groupby(['funcao', 'subfuncao']).agg({'cred_autorizado':'max', 'empenhado':'sum', 'liquidado':'sum'}).reset_index()
+            df_anexo2.columns = ['Função', 'Subfunção', 'Dotação Atualizada', 'Empenhado Acumulado', 'Liquidado Acumulado']
+            st.download_button("📥 Baixar Anexo II", data=gerar_excel_lrf(df_anexo2), file_name=f"LRF_Anexo_II_{bimestre_sel}.xlsx")
+        
+        st.divider()
+        st.caption("Nota: Os valores de arrecadação e execução são acumulados do início do exercício até o bimestre selecionado.")
