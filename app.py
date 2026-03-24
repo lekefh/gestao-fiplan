@@ -221,58 +221,7 @@ def preparar_base_receitas_lrf(df_rec, meses_bim, meses_ate_agora):
     base['perc_ate'] = base.apply(lambda r: safe_div(r['ate_bimestre'], r['previsao_atualizada']), axis=1)
     return base
 
-def preparar_base_despesas_lrf(df_desp, meses_bim, meses_ate_agora):
-    if df_desp.empty:
-        return pd.DataFrame(columns=[
-            'natureza', 'orcado_inicial', 'cred_autorizado', 'emp_no_bim', 'emp_ate',
-            'liq_no_bim', 'liq_ate', 'pago_ate', 'modalidade', 'grupo'
-        ])
-
-    chaves = ['natureza']
-    m_max = max(meses_ate_agora)
-
-    df_last = (
-        df_desp[df_desp['mes'] == m_max]
-        .groupby(chaves, as_index=False)
-        .agg({
-            'orcado_inicial': 'sum',
-            'cred_autorizado': 'sum'
-        })
-    )
-
-    df_bim = (
-        df_desp[df_desp['mes'].isin(meses_bim)]
-        .groupby(chaves, as_index=False)
-        .agg({
-            'empenhado': 'sum',
-            'liquidado': 'sum'
-        })
-        .rename(columns={
-            'empenhado': 'emp_no_bim',
-            'liquidado': 'liq_no_bim'
-        })
-    )
-
-    df_ate = (
-        df_desp[df_desp['mes'].isin(meses_ate_agora)]
-        .groupby(chaves, as_index=False)
-        .agg({
-            'empenhado': 'sum',
-            'liquidado': 'sum',
-            'pago': 'sum'
-        })
-        .rename(columns={
-            'empenhado': 'emp_ate',
-            'liquidado': 'liq_ate',
-            'pago': 'pago_ate'
-        })
-    )
-
-    base = df_last.merge(df_bim, on=chaves, how='outer').merge(df_ate, on=chaves, how='outer')
-    base = base.fillna(0)
-    base['modalidade'] = base['natureza'].apply(modalidade_da_natureza)
-    base['grupo'] = base['natureza'].apply(grupo_natureza)
-    return base
+undefined
 
 def preparar_base_funcional_lrf(df_desp, meses_bim, meses_ate_agora):
     if df_desp.empty:
