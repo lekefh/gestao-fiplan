@@ -7,6 +7,12 @@ import re
 
 DB_NAME = 'dados_gestao_integrada.db'
 st.set_page_config(page_title="FIPLAN - GESTAO INTEGRADA", layout="wide")
+st.markdown(
+    "<h2 style='text-align:center;margin-bottom:0'>UO 03601 - FUNAJURIS</h2>"
+    "<p style='text-align:center;color:#888;margin-top:0'>"
+    "Gestao Financeira Integrada - FIPLAN</p>",
+    unsafe_allow_html=True
+)
 
 MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun",
                "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
@@ -456,18 +462,27 @@ with st.sidebar:
             st.code(traceback.format_exc())
 
     st.divider()
-    st.subheader("Backup Receitas")
+    st.subheader("Backup Completo")
     conn_b = sqlite3.connect(DB_NAME)
-    df_bkp = pd.read_sql("SELECT * FROM receitas", conn_b)
+    tbls = {
+        "receitas":     pd.read_sql("SELECT * FROM receitas",      conn_b),
+        "orcamento":    pd.read_sql("SELECT * FROM orcamento",     conn_b),
+        "execucao":     pd.read_sql("SELECT * FROM execucao",      conn_b),
+        "sub_elementos":pd.read_sql("SELECT * FROM sub_elementos", conn_b),
+    }
     conn_b.close()
-    if not df_bkp.empty:
-        csv = df_bkp.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Baixar CSV", data=csv,
-            file_name="backup_receitas.csv", mime="text/csv"
-        )
-    file_restore = st.file_uploader("Restaurar (CSV)", type=["csv"])
-    if file_restore and st.button("Restaurar"):
+    for nome_tab, df_tab in tbls.items():
+        if not df_tab.empty:
+            st.download_button(
+                "Baixar " + nome_tab + " (CSV)",
+                data=df_tab.to_csv(index=False).encode("utf-8"),
+                file_name="backup_" + nome_tab + ".csv",
+                mime="text/csv",
+                key="bkp_" + nome_tab
+            )
+    st.caption("Restaurar apenas receitas:")
+    file_restore = st.file_uploader("Restaurar receitas (CSV)", type=["csv"])
+    if file_restore and st.button("Restaurar Receitas"):
         df_res = pd.read_csv(file_restore)
         conn_r = sqlite3.connect(DB_NAME)
         df_res.to_sql("receitas", conn_r, if_exists="replace", index=False)
@@ -746,8 +761,10 @@ with tab2:
                 fonte_s = fs4.multiselect(
                     "Fonte:", fontes_sub, key="fonte_s"
                 )
-                busca_sub = fs5.text_input(
-                    "Sub-elemento (busca por codigo ou descricao):", key="busca_sub"
+                # Sub-elemento: multiselect com todas as descricoes unicas
+                subs_disp = sorted(df_sub["subelemento_desc"].dropna().unique().tolist())
+                sub_sel = fs5.multiselect(
+                    "Sub-elemento:", subs_disp, key="sub_sel"
                 )
 
                 # Aplica filtros e soma todos os meses selecionados
@@ -758,16 +775,8 @@ with tab2:
                     df_sf = df_sf[df_sf["natureza_cod"].isin(nat_s)]
                 if fonte_s and "fonte" in df_sf.columns:
                     df_sf = df_sf[df_sf["fonte"].isin(fonte_s)]
-                if busca_sub:
-                    mask = (
-                        df_sf["subelemento_cod"].str.contains(
-                            busca_sub, case=False, na=False
-                        )
-                        | df_sf["subelemento_desc"].str.contains(
-                            busca_sub, case=False, na=False
-                        )
-                    )
-                    df_sf = df_sf[mask]
+                if sub_sel:
+                    df_sf = df_sf[df_sf["subelemento_desc"].isin(sub_sel)]
 
                 if not df_sf.empty:
                     has_fonte = "fonte" in df_sf.columns
