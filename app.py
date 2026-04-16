@@ -757,7 +757,7 @@ with tab2:
                     "Natureza:", sorted(df_sub["natureza_cod"].unique()), key="nat_s"
                 )
 
-                fs4, fs5 = st.columns(2)
+                fs4, fs5, fs6 = st.columns(3)
                 fonte_s = fs4.multiselect(
                     "Fonte:", fontes_sub, key="fonte_s"
                 )
@@ -766,9 +766,21 @@ with tab2:
                 sub_sel = fs5.multiselect(
                     "Sub-elemento:", subs_disp, key="sub_sel"
                 )
+                # UG: via DE-PARA com execucao (projeto = paoe)
+                ugs_sub = (
+                    sorted(df_exec["ug"].dropna().unique().tolist())
+                    if not df_exec.empty else []
+                )
+                ug_sel_s = fs6.multiselect(
+                    "UG (via PAOE):", ugs_sub, key="ug_sub"
+                )
 
                 # Aplica filtros e soma todos os meses selecionados
                 df_sf = df_sub[df_sub["mes"].isin(ms_s)].copy()
+                # Filtro UG via DE-PARA: ug -> execucao.projeto (= paoe) -> sub_elementos.paoe
+                if ug_sel_s and not df_exec.empty:
+                    paoes_da_ug = df_exec[df_exec["ug"].isin(ug_sel_s)]["projeto"].unique()
+                    df_sf = df_sf[df_sf["paoe"].isin(paoes_da_ug)]
                 if paoe_s:
                     df_sf = df_sf[df_sf["paoe"].isin(paoe_s)]
                 if nat_s:
