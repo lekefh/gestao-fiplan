@@ -121,16 +121,21 @@ def inicializar_banco():
         "empenhado REAL, liquidado REAL, pago REAL)"
     )
 
+    # Recria sub_elementos se a coluna fonte nao estiver na posicao correta
+    # (problema de ALTER TABLE que adiciona ao final, causando mapeamento errado)
+    cols_sub = [r[1] for r in conn.execute("PRAGMA table_info(sub_elementos)").fetchall()]
+    schema_correto = (
+        cols_sub == ["mes", "ano", "paoe", "natureza_cod", "natureza_desc",
+                     "subelemento_cod", "subelemento_desc", "fonte", "liquidado", "pago"]
+    )
+    if not schema_correto:
+        conn.execute("DROP TABLE IF EXISTS sub_elementos")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS sub_elementos ("
         "mes INTEGER, ano INTEGER, paoe TEXT, natureza_cod TEXT, natureza_desc TEXT, "
         "subelemento_cod TEXT, subelemento_desc TEXT, fonte TEXT, "
         "liquidado REAL, pago REAL)"
     )
-    try:
-        conn.execute("ALTER TABLE sub_elementos ADD COLUMN fonte TEXT DEFAULT ''")
-    except Exception:
-        pass
     conn.commit()
     conn.close()
 
@@ -428,7 +433,11 @@ with st.sidebar:
                         (m_final,)
                     )
                     conn.executemany(
-                        "INSERT INTO sub_elementos VALUES (?,?,?,?,?,?,?,?,?,?)", dados
+                        "INSERT INTO sub_elementos "
+                        "(mes, ano, paoe, natureza_cod, natureza_desc, "
+                        "subelemento_cod, subelemento_desc, fonte, liquidado, pago) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        dados
                     )
                     conn.commit()
                     liq_t = sum(r[8] for r in dados)
