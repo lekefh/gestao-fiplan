@@ -480,15 +480,20 @@ with st.sidebar:
                 mime="text/csv",
                 key="bkp_" + nome_tab
             )
-    st.caption("Restaurar apenas receitas:")
-    file_restore = st.file_uploader("Restaurar receitas (CSV)", type=["csv"])
-    if file_restore and st.button("Restaurar Receitas"):
+    st.caption("Restaurar tabela (CSV do backup):")
+    tabela_rest = st.selectbox(
+        "Tabela a restaurar:",
+        ["receitas", "orcamento", "execucao", "sub_elementos"],
+        key="tabela_rest"
+    )
+    file_restore = st.file_uploader("Arquivo CSV", type=["csv"], key="file_rest")
+    if file_restore and st.button("Restaurar"):
         df_res = pd.read_csv(file_restore)
         conn_r = sqlite3.connect(DB_NAME)
-        df_res.to_sql("receitas", conn_r, if_exists="replace", index=False)
+        df_res.to_sql(tabela_rest, conn_r, if_exists="replace", index=False)
         conn_r.commit()
         conn_r.close()
-        st.success("Restaurado!")
+        st.success("Tabela '" + tabela_rest + "' restaurada!")
         st.rerun()
 
     st.divider()
@@ -645,7 +650,8 @@ with tab2:
             sorted(df_exec["fonte"].unique()) if has_exec else [],
             key="font_d"
         )
-        bd = st.text_input("Natureza (busca por texto):", key="busca_d")
+        nats_disp = sorted(df_exec["natureza"].dropna().unique().tolist()) if has_exec else []
+        bd = st.multiselect("Natureza:", nats_disp, key="busca_d")
 
         # Aplica filtros sobre execucao
         df_ef = df_exec[df_exec["mes"].isin(ms_d)].copy() if has_exec else pd.DataFrame()
@@ -660,9 +666,7 @@ with tab2:
         if fts and not df_ef.empty:
             df_ef = df_ef[df_ef["fonte"].isin(fts)]
         if bd and not df_ef.empty:
-            df_ef = df_ef[
-                df_ef["natureza"].str.contains(bd, case=False, na=False)
-            ]
+            df_ef = df_ef[df_ef["natureza"].isin(bd)]
 
         # KPIs
         m_max_orc = int(df_orc["mes"].max()) if has_orc else 0
@@ -761,26 +765,37 @@ with tab2:
                 fonte_s = fs4.multiselect(
                     "Fonte:", fontes_sub, key="fonte_s"
                 )
-                # Sub-elemento: multiselect com todas as descricoes unicas
                 subs_disp = sorted(df_sub["subelemento_desc"].dropna().unique().tolist())
                 sub_sel = fs5.multiselect(
                     "Sub-elemento:", subs_disp, key="sub_sel"
                 )
-                # UG: via DE-PARA com execucao (projeto = paoe)
+                # UG via Natureza: execucao(ug+natureza) -> sub_elementos(natureza_cod)
+                # extrai apenas os digitos iniciais do campo natureza da execucao
                 ugs_sub = (
                     sorted(df_exec["ug"].dropna().unique().tolist())
                     if not df_exec.empty else []
                 )
                 ug_sel_s = fs6.multiselect(
-                    "UG (via PAOE):", ugs_sub, key="ug_sub"
+                    "UG (via Natureza):", ugs_sub, key="ug_sub"
                 )
 
                 # Aplica filtros e soma todos os meses selecionados
                 df_sf = df_sub[df_sub["mes"].isin(ms_s)].copy()
-                # Filtro UG via DE-PARA: ug -> execucao.projeto (= paoe) -> sub_elementos.paoe
+                # Filtro UG: UG -> naturezas na execucao -> natureza_cod no sub_elementos
                 if ug_sel_s and not df_exec.empty:
-                    paoes_da_ug = df_exec[df_exec["ug"].isin(ug_sel_s)]["projeto"].unique()
-                    df_sf = df_sf[df_sf["paoe"].isin(paoes_da_ug)]
+                    nats_ug = df_exec[df_exec["ug"].isin(ug_sel_s)]["natureza"].dropna().unique()
+                    # extrai prefixo numerico (ex: "339030 - CONSUMO" -> "339030")
+                    nats_cod_ug = set(
+                        re.match(r"^(\d+)", str(n).strip()).group(1)
+                        for n in nats_ug
+                        if re.match(r"^(\d+)", str(n).strip())
+                    )
+                    df_sf = df_sf[
+                        df_sf["natureza_cod"].apply(
+                            lambda x: re.match(r"^(\d+)", str(x).strip()).group(1)
+                            if re.match(r"^(\d+)", str(x).strip()) else x
+                        ).isin(nats_cod_ug)
+                    ]
                 if paoe_s:
                     df_sf = df_sf[df_sf["paoe"].isin(paoe_s)]
                 if nat_s:
