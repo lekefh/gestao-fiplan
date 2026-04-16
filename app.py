@@ -124,9 +124,13 @@ def inicializar_banco():
     conn.execute(
         "CREATE TABLE IF NOT EXISTS sub_elementos ("
         "mes INTEGER, ano INTEGER, paoe TEXT, natureza_cod TEXT, natureza_desc TEXT, "
-        "subelemento_cod TEXT, subelemento_desc TEXT, "
+        "subelemento_cod TEXT, subelemento_desc TEXT, fonte TEXT, "
         "liquidado REAL, pago REAL)"
     )
+    try:
+        conn.execute("ALTER TABLE sub_elementos ADD COLUMN fonte TEXT DEFAULT ''")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -374,6 +378,8 @@ with st.sidebar:
                         parts = text.split(" ", 1)
                         sub_cod  = parts[0].strip()
                         sub_desc = parts[1].strip() if len(parts) > 1 else ""
+                        # Fonte: ultimo segmento do codigo (ex: 3.3.90.47.47.016.17600000)
+                        fonte_sub = sub_cod.rsplit(".", 1)[-1] if "." in sub_cod else ""
                         liq_cum  = (
                             limpar_f(row.iloc[1]) if pd.notna(row.iloc[1]) else 0.0
                         )
@@ -386,6 +392,7 @@ with st.sidebar:
                             "nat_desc": cur_nat_desc,
                             "sub_cod": sub_cod,
                             "sub_desc": sub_desc,
+                            "fonte": fonte_sub,
                             "liq_cum": liq_cum,
                             "pag_cum": pag_cum,
                         })
@@ -393,46 +400,29 @@ with st.sidebar:
                 if not linhas:
                     st.warning("Nenhum sub-elemento valido encontrado.")
                 else:
+                    # A 701 e acumulada (YTD). Guardamos o valor cumulativo
+                    # diretamente — sem subtrair meses anteriores.
+                    # No display, o usuario escolhe o mes de referencia e vemos
+                    # o acumulado ate aquele mes, evitando distorcoes por anulacoes.
                     chaves_701 = ["paoe", "nat_cod", "sub_cod"]
                     df_mes = (
                         pd.DataFrame(linhas)
                         .groupby(
-                            chaves_701 + ["nat_desc", "sub_desc"], as_index=False
+                            chaves_701 + ["nat_desc", "sub_desc", "fonte"],
+                            as_index=False
                         )
                         .agg(
                             liq_cum=("liq_cum", "sum"),
                             pag_cum=("pag_cum", "sum")
                         )
                     )
-
-                    if m_final > 1:
-                        df_ant = pd.read_sql(
-                            "SELECT paoe, natureza_cod AS nat_cod,"
-                            "subelemento_cod AS sub_cod,"
-                            "SUM(liquidado) AS liq_ant, SUM(pago) AS pag_ant "
-                            "FROM sub_elementos WHERE ano=2026 AND mes<? "
-                            "GROUP BY paoe, natureza_cod, subelemento_cod",
-                            conn, params=(m_final,)
-                        )
-                    else:
-                        df_ant = pd.DataFrame(
-                            columns=chaves_701 + ["liq_ant", "pag_ant"]
-                        )
-
-                    df_mes = df_mes.merge(df_ant, on=chaves_701, how="left").fillna(0)
-                    df_mes["liquidado"] = (
-                        df_mes["liq_cum"] - df_mes["liq_ant"]
-                    ).clip(lower=0)
-                    df_mes["pago"] = (
-                        df_mes["pag_cum"] - df_mes["pag_ant"]
-                    ).clip(lower=0)
-
+                    # Armazena os valores cumulativos como liquidado/pago
                     dados = [
                         (
                             m_final, 2026,
                             r.paoe, r.nat_cod, r.nat_desc,
-                            r.sub_cod, r.sub_desc,
-                            float(r.liquidado), float(r.pago),
+                            r.sub_cod, r.sub_desc, r.fonte,
+                            float(r.liq_cum), float(r.pag_cum),
                         )
                         for r in df_mes.itertuples()
                     ]
@@ -441,12 +431,15 @@ with st.sidebar:
                         (m_final,)
                     )
                     conn.executemany(
-                        "INSERT INTO sub_elementos VALUES (?,?,?,?,?,?,?,?,?)", dados
+                        "INSERT INTO sub_elementos VALUES (?,?,?,?,?,?,?,?,?,?)", dados
                     )
                     conn.commit()
+                    liq_t = sum(r[8] for r in dados)
+                    pag_t = sum(r[9] for r in dados)
                     st.success(
                         "Sub-elemento " + MESES_NOMES[m_final - 1] + "/2026: "
-                        + str(len(dados)) + " registros"
+                        + str(len(dados)) + " registros | "
+                        + "Liq R$ {:,.0f} | Pago R$ {:,.0f}".format(liq_t, pag_t)
                     )
 
             conn.close()
@@ -724,10 +717,15 @@ with tab2:
         if not df_sub.empty:
             st.divider()
             with st.expander("Sub-elementos por PAOE (FIP 701)"):
+                # Os valores sao cumulativos (YTD). O display usa sempre
+                # o mes de referencia mais recente selecionado.
+                meses_sub = sorted(df_sub["mes"].unique())
+                fontes_sub = sorted(df_sub["fonte"].dropna().unique()) if "fonte" in df_sub.columns else []
+
                 fs1, fs2, fs3 = st.columns(3)
                 ms_s = fs1.multiselect(
-                    "Meses:", sorted(df_sub["mes"].unique()),
-                    default=list(df_sub["mes"].unique()),
+                    "Mes de referencia (YTD):", meses_sub,
+                    default=[max(meses_sub)],
                     format_func=lambda x: MESES_NOMES[x - 1], key="ms_s"
                 )
                 paoe_s = fs2.multiselect(
@@ -737,26 +735,49 @@ with tab2:
                     "Natureza:", sorted(df_sub["natureza_cod"].unique()), key="nat_s"
                 )
 
-                df_sf = df_sub[df_sub["mes"].isin(ms_s)]
+                fs4, fs5, fs6 = st.columns(3)
+                fonte_s = fs4.multiselect(
+                    "Fonte:", fontes_sub, key="fonte_s"
+                )
+                busca_sub = fs5.text_input(
+                    "Sub-elemento (busca):", key="busca_sub"
+                )
+
+                # Usa apenas o mes de referencia mais recente selecionado (YTD)
+                m_ref_s = max(ms_s) if ms_s else max(meses_sub)
+                df_sf = df_sub[df_sub["mes"] == m_ref_s].copy()
+
                 if paoe_s:
                     df_sf = df_sf[df_sf["paoe"].isin(paoe_s)]
                 if nat_s:
                     df_sf = df_sf[df_sf["natureza_cod"].isin(nat_s)]
+                if fonte_s and "fonte" in df_sf.columns:
+                    df_sf = df_sf[df_sf["fonte"].isin(fonte_s)]
+                if busca_sub:
+                    mask = (
+                        df_sf["subelemento_cod"].str.contains(busca_sub, case=False, na=False)
+                        | df_sf["subelemento_desc"].str.contains(busca_sub, case=False, na=False)
+                    )
+                    df_sf = df_sf[mask]
 
                 if not df_sf.empty:
                     col_s = [
                         "paoe", "natureza_cod", "natureza_desc",
                         "subelemento_cod", "subelemento_desc"
                     ]
+                    if "fonte" in df_sf.columns:
+                        col_s = col_s[:4] + ["fonte"] + col_s[4:]
                     df_sv = df_sf.groupby(col_s, as_index=False)[
                         ["liquidado", "pago"]
                     ].sum()
                     ks1, ks2 = st.columns(2)
                     ks1.metric(
-                        "Liquidado", "R$ {:,.2f}".format(df_sv["liquidado"].sum())
+                        "Liquidado (ate " + MESES_NOMES[m_ref_s - 1] + ")",
+                        "R$ {:,.2f}".format(df_sv["liquidado"].sum())
                     )
                     ks2.metric(
-                        "Pago", "R$ {:,.2f}".format(df_sv["pago"].sum())
+                        "Pago (ate " + MESES_NOMES[m_ref_s - 1] + ")",
+                        "R$ {:,.2f}".format(df_sv["pago"].sum())
                     )
                     st.dataframe(
                         df_sv[col_s + ["liquidado", "pago"]]
