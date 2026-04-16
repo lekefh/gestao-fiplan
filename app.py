@@ -20,10 +20,21 @@ MESES_NOMES = ["Jan", "Fev", "Mar", "Abr", "Maio", "Jun",
                "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
 MESES_SEM_ACENTO = {
-    "JANEIRO": 1, "FEVEREIRO": 2, "MARCO": 3, "ABRIL": 4,
-    "MAIO": 5, "JUNHO": 6, "JULHO": 7, "AGOSTO": 8,
-    "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12
-    BIMESTRES = {
+    "JANEIRO": 1,
+    "FEVEREIRO": 2,
+    "MARCO": 3,
+    "ABRIL": 4,
+    "MAIO": 5,
+    "JUNHO": 6,
+    "JULHO": 7,
+    "AGOSTO": 8,
+    "SETEMBRO": 9,
+    "OUTUBRO": 10,
+    "NOVEMBRO": 11,
+    "DEZEMBRO": 12
+}
+
+BIMESTRES = {
     "1º Bimestre (Jan-Fev)": [1, 2],
     "2º Bimestre (Mar-Abr)": [3, 4],
     "3º Bimestre (Mai-Jun)": [5, 6],
@@ -32,11 +43,12 @@ MESES_SEM_ACENTO = {
     "6º Bimestre (Nov-Dez)": [11, 12]
 }
 
-}
-
 CATEGORIAS_REC = [
-    "Receita Tributaria", "Receita Patrimonial", "Receita de Servicos",
-    "Repasses Correntes", "Demais Receitas"
+    "Receita Tributaria",
+    "Receita Patrimonial",
+    "Receita de Servicos",
+    "Repasses Correntes",
+    "Demais Receitas"
 ]
 
 st.markdown(
