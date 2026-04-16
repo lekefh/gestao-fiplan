@@ -400,10 +400,8 @@ with st.sidebar:
                 if not linhas:
                     st.warning("Nenhum sub-elemento valido encontrado.")
                 else:
-                    # A 701 e acumulada (YTD). Guardamos o valor cumulativo
-                    # diretamente — sem subtrair meses anteriores.
-                    # No display, o usuario escolhe o mes de referencia e vemos
-                    # o acumulado ate aquele mes, evitando distorcoes por anulacoes.
+                    # A 701 ja traz valores mensais diretos (como a 613).
+                    # Armazenamos os valores do mes sem qualquer subtracao.
                     chaves_701 = ["paoe", "nat_cod", "sub_cod"]
                     df_mes = (
                         pd.DataFrame(linhas)
@@ -416,7 +414,6 @@ with st.sidebar:
                             pag_cum=("pag_cum", "sum")
                         )
                     )
-                    # Armazena os valores cumulativos como liquidado/pago
                     dados = [
                         (
                             m_final, 2026,
@@ -713,19 +710,20 @@ with tab2:
                 width='stretch'
             )
 
-        # Sub-elementos (FIP 701)
+        # Sub-elementos (FIP 701) — valores mensais diretos, soma dos meses selecionados
         if not df_sub.empty:
             st.divider()
             with st.expander("Sub-elementos por PAOE (FIP 701)"):
-                # Os valores sao cumulativos (YTD). O display usa sempre
-                # o mes de referencia mais recente selecionado.
                 meses_sub = sorted(df_sub["mes"].unique())
-                fontes_sub = sorted(df_sub["fonte"].dropna().unique()) if "fonte" in df_sub.columns else []
+                fontes_sub = (
+                    sorted(df_sub["fonte"].dropna().unique())
+                    if "fonte" in df_sub.columns else []
+                )
 
                 fs1, fs2, fs3 = st.columns(3)
                 ms_s = fs1.multiselect(
-                    "Mes de referencia (YTD):", meses_sub,
-                    default=[max(meses_sub)],
+                    "Meses:", meses_sub,
+                    default=meses_sub,
                     format_func=lambda x: MESES_NOMES[x - 1], key="ms_s"
                 )
                 paoe_s = fs2.multiselect(
@@ -735,18 +733,16 @@ with tab2:
                     "Natureza:", sorted(df_sub["natureza_cod"].unique()), key="nat_s"
                 )
 
-                fs4, fs5, fs6 = st.columns(3)
+                fs4, fs5 = st.columns(2)
                 fonte_s = fs4.multiselect(
                     "Fonte:", fontes_sub, key="fonte_s"
                 )
                 busca_sub = fs5.text_input(
-                    "Sub-elemento (busca):", key="busca_sub"
+                    "Sub-elemento (busca por codigo ou descricao):", key="busca_sub"
                 )
 
-                # Usa apenas o mes de referencia mais recente selecionado (YTD)
-                m_ref_s = max(ms_s) if ms_s else max(meses_sub)
-                df_sf = df_sub[df_sub["mes"] == m_ref_s].copy()
-
+                # Aplica filtros e soma todos os meses selecionados
+                df_sf = df_sub[df_sub["mes"].isin(ms_s)].copy()
                 if paoe_s:
                     df_sf = df_sf[df_sf["paoe"].isin(paoe_s)]
                 if nat_s:
@@ -755,29 +751,32 @@ with tab2:
                     df_sf = df_sf[df_sf["fonte"].isin(fonte_s)]
                 if busca_sub:
                     mask = (
-                        df_sf["subelemento_cod"].str.contains(busca_sub, case=False, na=False)
-                        | df_sf["subelemento_desc"].str.contains(busca_sub, case=False, na=False)
+                        df_sf["subelemento_cod"].str.contains(
+                            busca_sub, case=False, na=False
+                        )
+                        | df_sf["subelemento_desc"].str.contains(
+                            busca_sub, case=False, na=False
+                        )
                     )
                     df_sf = df_sf[mask]
 
                 if not df_sf.empty:
-                    col_s = [
-                        "paoe", "natureza_cod", "natureza_desc",
-                        "subelemento_cod", "subelemento_desc"
-                    ]
-                    if "fonte" in df_sf.columns:
-                        col_s = col_s[:4] + ["fonte"] + col_s[4:]
+                    has_fonte = "fonte" in df_sf.columns
+                    col_s = ["paoe", "natureza_cod", "natureza_desc"]
+                    if has_fonte:
+                        col_s += ["fonte"]
+                    col_s += ["subelemento_cod", "subelemento_desc"]
+
                     df_sv = df_sf.groupby(col_s, as_index=False)[
                         ["liquidado", "pago"]
                     ].sum()
+
                     ks1, ks2 = st.columns(2)
                     ks1.metric(
-                        "Liquidado (ate " + MESES_NOMES[m_ref_s - 1] + ")",
-                        "R$ {:,.2f}".format(df_sv["liquidado"].sum())
+                        "Liquidado", "R$ {:,.2f}".format(df_sv["liquidado"].sum())
                     )
                     ks2.metric(
-                        "Pago (ate " + MESES_NOMES[m_ref_s - 1] + ")",
-                        "R$ {:,.2f}".format(df_sv["pago"].sum())
+                        "Pago", "R$ {:,.2f}".format(df_sv["pago"].sum())
                     )
                     st.dataframe(
                         df_sv[col_s + ["liquidado", "pago"]]
